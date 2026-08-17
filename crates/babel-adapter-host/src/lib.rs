@@ -3,7 +3,7 @@
 use std::{
     collections::HashMap,
     fs::{self, File, OpenOptions},
-    io::{BufRead, BufReader, Read, Seek, SeekFrom, Write},
+    io::{BufRead, BufReader, BufWriter, Read, Seek, SeekFrom, Write},
     path::{Path, PathBuf},
     sync::Mutex,
 };
@@ -114,6 +114,50 @@ impl CapabilityRegistry {
         Ok(bytes)
     }
 
+    pub fn publish_staging_no_clobber(
+        &self,
+        handle: &StagingHandle,
+        destination: impl AsRef<Path>,
+    ) -> Result<(), AdapterError> {
+        let destination = destination.as_ref();
+        let parent = destination
+            .parent()
+            .filter(|parent| !parent.as_os_str().is_empty())
+            .ok_or_else(|| AdapterError::InvalidInput("export path has no parent".to_owned()))?;
+        if destination.file_name().is_none() {
+            return Err(AdapterError::InvalidInput(
+                "export path has no file name".to_owned(),
+            ));
+        }
+        if destination.exists() {
+            return Err(std::io::Error::new(
+                std::io::ErrorKind::AlreadyExists,
+                "export destination already exists",
+            )
+            .into());
+        }
+
+        let candidate = parent.join(format!(".babel-tower-{}.candidate", Uuid::new_v4()));
+        let result = (|| {
+            let mut reader = self.open_staging(handle)?;
+            let file = OpenOptions::new()
+                .create_new(true)
+                .write(true)
+                .open(&candidate)?;
+            let mut writer = BufWriter::with_capacity(1024 * 1024, file);
+            std::io::copy(&mut reader, &mut writer)?;
+            writer.flush()?;
+            writer.get_ref().sync_all()?;
+
+            // Hard linking is an atomic no-clobber publication on both target platforms.
+            fs::hard_link(&candidate, destination)?;
+            sync_parent(parent)?;
+            Ok(())
+        })();
+        let _ = fs::remove_file(&candidate);
+        result
+    }
+
     fn grant(&self, capability_id: &[u8; 16]) -> Result<Grant, AdapterError> {
         self.grants
             .lock()
@@ -122,6 +166,16 @@ impl CapabilityRegistry {
             .cloned()
             .ok_or(AdapterError::CapabilityDenied)
     }
+}
+
+#[cfg(unix)]
+fn sync_parent(parent: &Path) -> std::io::Result<()> {
+    File::open(parent)?.sync_all()
+}
+
+#[cfg(not(unix))]
+fn sync_parent(_parent: &Path) -> std::io::Result<()> {
+    Ok(())
 }
 
 impl CapabilityIo for CapabilityRegistry {
@@ -168,6 +222,23 @@ impl CapabilityIo for CapabilityRegistry {
         }
         match self.grant(&handle.capability_id)? {
             Grant::Staging { path } => Ok(Box::new(File::open(path)?)),
+            _ => Err(AdapterError::CapabilityDenied),
+        }
+    }
+
+    fn open_staging_writer(
+        &self,
+        handle: &StagingHandle,
+    ) -> Result<Box<dyn babel_adapter_protocol::WriteSeek>, AdapterError> {
+        if handle.access != CapabilityAccess::ReadWriteStaging {
+            return Err(AdapterError::CapabilityDenied);
+        }
+        match self.grant(&handle.capability_id)? {
+            Grant::Staging { path } => {
+                let file = OpenOptions::new().read(true).write(true).open(path)?;
+                file.set_len(0)?;
+                Ok(Box::new(file))
+            }
             _ => Err(AdapterError::CapabilityDenied),
         }
     }
@@ -896,5 +967,26 @@ mod tests {
         write_frame(&mut wire, &envelope).unwrap();
         let decoded: AdapterEnvelope = read_frame(&mut IoCursor::new(wire)).unwrap();
         assert_eq!(decoded.encode_to_vec(), envelope.encode_to_vec());
+    }
+
+    #[test]
+    fn staging_publication_is_streamed_and_never_clobbers() {
+        let (temp, registry, _handle) = fixture();
+        let staging = registry.create_staging().unwrap();
+        registry
+            .write_staging_at(&staging, 0, b"verified candidate")
+            .unwrap();
+        let destination = temp.path().join("book.epub");
+        registry
+            .publish_staging_no_clobber(&staging, &destination)
+            .unwrap();
+        assert_eq!(fs::read(&destination).unwrap(), b"verified candidate");
+
+        fs::write(&destination, b"existing delivery").unwrap();
+        let error = registry
+            .publish_staging_no_clobber(&staging, &destination)
+            .unwrap_err();
+        assert!(matches!(error, AdapterError::Io(_)));
+        assert_eq!(fs::read(destination).unwrap(), b"existing delivery");
     }
 }

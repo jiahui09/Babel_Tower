@@ -42,6 +42,12 @@ pub enum Locator {
         start: u64,
         end: u64,
     },
+    ArchiveMemberByteSpan {
+        object_hash: [u8; 32],
+        member_path: String,
+        start: u64,
+        end: u64,
+    },
     StructuralPath {
         resource_id: ResourceId,
         path_segments: Vec<String>,
@@ -192,7 +198,9 @@ fn locator_resource(locator: &Locator) -> Option<ResourceId> {
         | Locator::SpatialRegion { resource_id, .. }
         | Locator::TemporalRange { resource_id, .. }
         | Locator::FrameRange { resource_id, .. } => Some(*resource_id),
-        Locator::ByteSpan { .. } | Locator::OpaqueAdapter { .. } => None,
+        Locator::ByteSpan { .. }
+        | Locator::ArchiveMemberByteSpan { .. }
+        | Locator::OpaqueAdapter { .. } => None,
     }
 }
 
@@ -215,6 +223,7 @@ pub fn resource_key(
 fn validate_locator(locator: &Locator) -> Result<(), GraphError> {
     match locator {
         Locator::ByteSpan { start, end, .. }
+        | Locator::ArchiveMemberByteSpan { start, end, .. }
         | Locator::TemporalRange {
             start_ns: start,
             end_ns: end,
@@ -514,6 +523,16 @@ mod tests {
                 timebase_denominator: 0,
             }),
             Err(GraphError::InvalidTimebase)
+        );
+
+        assert_eq!(
+            validate_locator(&Locator::ArchiveMemberByteSpan {
+                object_hash: [7; 32],
+                member_path: "EPUB/chapter.xhtml".to_owned(),
+                start: 9,
+                end: 4,
+            }),
+            Err(GraphError::InvertedRange)
         );
     }
 

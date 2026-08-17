@@ -20,6 +20,7 @@ use babel_adapter_protocol::{
     ExtractedUnit, InventoryItem, OverlayUnit, Page, TaskBudget,
 };
 use babel_domain::core::{ProjectId, RevisionKind, TaskId, TaskState, WorkPriority};
+use babel_epub_adapter::EpubAdapter;
 use babel_markdown_adapter::MarkdownAdapter;
 use babel_resource_graph::{RESOURCE_GRAPH_SCHEMA_VERSION, ResourceGraph, ResourceKind};
 use babel_runtime::{
@@ -52,24 +53,33 @@ const GC_BATCH_WALL_TIME: Duration = Duration::from_millis(50);
 const MAX_INTERACTIVE_BURST: usize = 32;
 const FORMAT_PIPELINE_PAGE_BYTES: u64 = 64 * 1024 * 1024;
 const FORMAT_PIPELINE_PAGE_NODES: u32 = 100_000;
-const FORMAT_WORKER_REQUEST_TIMEOUT: Duration = Duration::from_secs(30);
 const FORMAT_WORKER_CHUNK_BYTES: usize = 1024 * 1024;
 const FORMAT_WRITER_BATCH_ITEMS: usize = 5_000;
 
 const TXT_ADAPTER_ID: &str = "org.babel-tower.txt";
 const MARKDOWN_ADAPTER_ID: &str = "org.babel-tower.markdown";
+const EPUB_ADAPTER_ID: &str = "org.babel-tower.epub";
 
 #[derive(Clone, Copy, Debug, PartialEq, Eq)]
 enum FormatKind {
     Txt,
     Markdown,
+    Epub,
 }
 
 impl FormatKind {
+    const fn request_timeout(self) -> Duration {
+        match self {
+            Self::Epub => Duration::from_secs(120),
+            Self::Txt | Self::Markdown => Duration::from_secs(30),
+        }
+    }
+
     const fn label(self) -> &'static str {
         match self {
             Self::Txt => "TXT",
             Self::Markdown => "Markdown",
+            Self::Epub => "EPUB",
         }
     }
 
@@ -77,6 +87,7 @@ impl FormatKind {
         match self {
             Self::Txt => "txt",
             Self::Markdown => "markdown",
+            Self::Epub => "epub",
         }
     }
 
@@ -84,6 +95,7 @@ impl FormatKind {
         match self {
             Self::Txt => "text/plain",
             Self::Markdown => "text/markdown",
+            Self::Epub => "application/epub+zip",
         }
     }
 
@@ -91,6 +103,7 @@ impl FormatKind {
         match self {
             Self::Txt => "BABEL_TXT_WORKER",
             Self::Markdown => "BABEL_MARKDOWN_WORKER",
+            Self::Epub => "BABEL_EPUB_WORKER",
         }
     }
 
@@ -110,6 +123,13 @@ impl FormatKind {
                     "babel-markdown-worker"
                 }
             }
+            Self::Epub => {
+                if cfg!(windows) {
+                    "babel-epub-worker.exe"
+                } else {
+                    "babel-epub-worker"
+                }
+            }
         }
     }
 
@@ -117,6 +137,7 @@ impl FormatKind {
         match self {
             Self::Txt => b"babel-txt-worker-v1",
             Self::Markdown => b"babel-markdown-worker-v1",
+            Self::Epub => b"babel-epub-worker-v1",
         }
     }
 
@@ -124,6 +145,7 @@ impl FormatKind {
         match adapter_id {
             TXT_ADAPTER_ID => Ok(Self::Txt),
             MARKDOWN_ADAPTER_ID => Ok(Self::Markdown),
+            EPUB_ADAPTER_ID => Ok(Self::Epub),
             other => Err(KernelError::WorkerDiagnostic(format!(
                 "unsupported generation adapter id: {other}"
             ))),
@@ -165,6 +187,7 @@ pub struct FormatImportReport {
     pub units: usize,
     pub activated: bool,
     pub review_required: usize,
+    pub worker_peak_rss_kib: Option<u64>,
 }
 
 #[derive(Clone, Debug, PartialEq, Eq, Serialize, Deserialize)]
@@ -192,6 +215,15 @@ pub struct FormatExportReport {
 }
 
 #[derive(Clone, Debug, PartialEq, Eq, Serialize, Deserialize)]
+pub struct FormatFileExportReport {
+    pub generation_id: [u8; 16],
+    pub frozen_commit_sequence: i64,
+    pub output_hash: [u8; 32],
+    pub byte_length: u64,
+    pub path: PathBuf,
+}
+
+#[derive(Clone, Debug, PartialEq, Eq, Serialize, Deserialize)]
 pub struct AddAnnotationRequest {
     pub annotation_id: [u8; 16],
     pub unit_id: Vec<u8>,
@@ -210,6 +242,11 @@ pub type MarkdownImportReport = FormatImportReport;
 pub type MarkdownBindingReview = FormatBindingReview;
 pub type MarkdownValidationIssue = FormatValidationIssue;
 pub type MarkdownExportReport = FormatExportReport;
+pub type EpubImportReport = FormatImportReport;
+pub type EpubBindingReview = FormatBindingReview;
+pub type EpubValidationIssue = FormatValidationIssue;
+pub type EpubExportReport = FormatExportReport;
+pub type EpubFileExportReport = FormatFileExportReport;
 
 #[derive(Debug, Serialize)]
 #[serde(tag = "operation", rename_all = "kebab-case")]
@@ -275,6 +312,7 @@ struct InventoryPageReply {
 #[derive(Debug, Deserialize)]
 struct ExtractPageReply {
     page: Page<ExtractedUnit>,
+    worker_peak_rss_kib: Option<u64>,
 }
 
 struct PreparedFormatImport {
@@ -288,6 +326,7 @@ struct PreparedFormatImport {
     nodes: Vec<babel_resource_graph::ResourceNode>,
     edges: Vec<babel_resource_graph::ResourceEdge>,
     units: Vec<ExtractedUnit>,
+    worker_peak_rss_kib: Option<u64>,
 }
 
 pub struct CommitSubscription {
@@ -485,6 +524,7 @@ fn import_txt_bytes(
         units: units.len(),
         activated: true,
         review_required: 0,
+        worker_peak_rss_kib: None,
     })
 }
 
@@ -649,15 +689,30 @@ fn prepare_format_source_with_worker(
     }
     .validate()
     .map_err(|error| AdapterError::InvalidInput(error.to_string()))?;
-    let text_resource = nodes
+    let text_resources = nodes
         .iter()
-        .find(|node| node.kind == ResourceKind::TextStream)
-        .ok_or_else(|| {
-            AdapterError::InvalidInput(format!("{} inventory has no text stream", format.label()))
-        })?
-        .resource_id;
-    let units =
-        collect_format_units_from_worker(&mut client, session_id, generation_id, text_resource)?;
+        .filter(|node| node.kind == ResourceKind::TextStream)
+        .map(|node| node.resource_id)
+        .collect::<Vec<_>>();
+    if text_resources.is_empty() {
+        return Err(AdapterError::InvalidInput(format!(
+            "{} inventory has no text stream",
+            format.label()
+        ))
+        .into());
+    }
+    let mut units = Vec::new();
+    let mut worker_peak_rss_kib = None;
+    for text_resource in text_resources {
+        let (resource_units, resource_peak_rss_kib) = collect_format_units_from_worker(
+            &mut client,
+            session_id,
+            generation_id,
+            text_resource,
+        )?;
+        units.extend(resource_units);
+        worker_peak_rss_kib = worker_peak_rss_kib.max(resource_peak_rss_kib);
+    }
 
     Ok(PreparedFormatImport {
         format,
@@ -670,6 +725,7 @@ fn prepare_format_source_with_worker(
         nodes,
         edges,
         units,
+        worker_peak_rss_kib,
     })
 }
 
@@ -691,6 +747,7 @@ fn commit_prepared_format(
         nodes,
         edges,
         units,
+        worker_peak_rss_kib,
     } = prepared;
     store.begin_generation(&GenerationDescriptor {
         generation_id: *generation_id.as_bytes(),
@@ -841,6 +898,7 @@ fn commit_prepared_format(
         units: units.len(),
         activated,
         review_required,
+        worker_peak_rss_kib,
     })
 }
 
@@ -864,16 +922,26 @@ fn adapter_for_format(format: FormatKind) -> Result<Box<dyn Adapter>, KernelErro
     match format {
         FormatKind::Txt => Ok(Box::new(TxtAdapter::new())),
         FormatKind::Markdown => Ok(Box::new(MarkdownAdapter::new())),
+        FormatKind::Epub => Ok(Box::new(EpubAdapter::new())),
     }
 }
 
-fn export_format_bytes(
+struct MaterializedFormatExport {
+    registry: CapabilityRegistry,
+    staging: babel_adapter_protocol::StagingHandle,
+    generation_id: [u8; 16],
+    frozen_commit_sequence: i64,
+    output_hash: [u8; 32],
+    byte_length: u64,
+}
+
+fn materialize_format_export(
     store: &ProjectStore,
     object_root: impl AsRef<Path>,
     staging_root: impl AsRef<Path>,
     generation_id: &[u8; 16],
     frozen_commit_sequence: i64,
-) -> Result<FormatExportReport, KernelError> {
+) -> Result<MaterializedFormatExport, KernelError> {
     let issues = validate_format_export(store, generation_id, frozen_commit_sequence)?;
     if !issues.is_empty() {
         let descriptor = store.source_snapshot_descriptor(generation_id)?;
@@ -892,7 +960,7 @@ fn export_format_bytes(
     let source = registry.grant_object(descriptor.source_snapshot_hash, byte_length)?;
     let adapter = adapter_for_format(format)?;
     let token = CancellationToken::default();
-    let budget = format_budget(byte_length);
+    let budget = format_budget_for(format, byte_length);
     let execution = ExecutionContext::new(&budget, &token);
     let snapshots = store.frozen_unit_snapshot(generation_id, frozen_commit_sequence)?;
     let overlays = snapshots
@@ -940,12 +1008,63 @@ fn export_format_bytes(
             verification.issue_codes.join(","),
         )));
     }
-    Ok(FormatExportReport {
+    Ok(MaterializedFormatExport {
+        registry,
+        staging,
         generation_id: *generation_id,
         frozen_commit_sequence,
         output_hash: verification.output_hash,
         byte_length: verification.byte_length,
-        bytes: registry.staging_bytes(&staging)?,
+    })
+}
+
+fn export_format_bytes(
+    store: &ProjectStore,
+    object_root: impl AsRef<Path>,
+    staging_root: impl AsRef<Path>,
+    generation_id: &[u8; 16],
+    frozen_commit_sequence: i64,
+) -> Result<FormatExportReport, KernelError> {
+    let materialized = materialize_format_export(
+        store,
+        object_root,
+        staging_root,
+        generation_id,
+        frozen_commit_sequence,
+    )?;
+    Ok(FormatExportReport {
+        generation_id: materialized.generation_id,
+        frozen_commit_sequence: materialized.frozen_commit_sequence,
+        output_hash: materialized.output_hash,
+        byte_length: materialized.byte_length,
+        bytes: materialized.registry.staging_bytes(&materialized.staging)?,
+    })
+}
+
+fn export_format_to_path(
+    store: &ProjectStore,
+    object_root: impl AsRef<Path>,
+    staging_root: impl AsRef<Path>,
+    generation_id: &[u8; 16],
+    frozen_commit_sequence: i64,
+    destination: PathBuf,
+) -> Result<FormatFileExportReport, KernelError> {
+    let materialized = materialize_format_export(
+        store,
+        object_root,
+        staging_root,
+        generation_id,
+        frozen_commit_sequence,
+    )?;
+    materialized
+        .registry
+        .publish_staging_no_clobber(&materialized.staging, &destination)?;
+    Ok(FormatFileExportReport {
+        generation_id: materialized.generation_id,
+        frozen_commit_sequence: materialized.frozen_commit_sequence,
+        output_hash: materialized.output_hash,
+        byte_length: materialized.byte_length,
+        path: destination,
     })
 }
 
@@ -1214,6 +1333,15 @@ impl Kernel {
         self.import_format_reader(FormatKind::Markdown, source_id, reader, created_at_ms)
     }
 
+    pub fn import_epub_reader(
+        &self,
+        source_id: [u8; 16],
+        reader: impl Read,
+        created_at_ms: i64,
+    ) -> Result<EpubImportReport, KernelError> {
+        self.import_format_reader(FormatKind::Epub, source_id, reader, created_at_ms)
+    }
+
     fn import_format_reader(
         &self,
         format: FormatKind,
@@ -1257,6 +1385,10 @@ impl Kernel {
         self.validate_active_format(FormatKind::Markdown)
     }
 
+    pub fn validate_active_epub(&self) -> Result<Vec<EpubValidationIssue>, KernelError> {
+        self.validate_active_format(FormatKind::Epub)
+    }
+
     fn validate_active_format(
         &self,
         expected_format: FormatKind,
@@ -1282,6 +1414,13 @@ impl Kernel {
         &self,
         generation_id: [u8; 16],
     ) -> Result<Vec<MarkdownBindingReview>, KernelError> {
+        self.pending_bindings(generation_id)
+    }
+
+    pub fn pending_epub_bindings(
+        &self,
+        generation_id: [u8; 16],
+    ) -> Result<Vec<EpubBindingReview>, KernelError> {
         self.pending_bindings(generation_id)
     }
 
@@ -1392,6 +1531,14 @@ impl Kernel {
     }
 
     pub fn activate_markdown_import(
+        &self,
+        generation_id: [u8; 16],
+        activated_at_ms: i64,
+    ) -> Result<(), KernelError> {
+        self.activate_import(generation_id, activated_at_ms)
+    }
+
+    pub fn activate_epub_import(
         &self,
         generation_id: [u8; 16],
         activated_at_ms: i64,
@@ -1593,6 +1740,17 @@ impl Kernel {
         self.export_active_format(FormatKind::Markdown)
     }
 
+    pub fn export_active_epub(&self) -> Result<EpubExportReport, KernelError> {
+        self.export_active_format(FormatKind::Epub)
+    }
+
+    pub fn export_active_epub_to_path(
+        &self,
+        destination: impl AsRef<Path>,
+    ) -> Result<EpubFileExportReport, KernelError> {
+        self.export_active_format_to_path(FormatKind::Epub, destination.as_ref().to_owned())
+    }
+
     fn export_active_format(
         &self,
         expected_format: FormatKind,
@@ -1603,6 +1761,24 @@ impl Kernel {
         )?;
         match response {
             Response::FormatExported(report) => Ok(report),
+            _ => Err(KernelError::UnexpectedResponse),
+        }
+    }
+
+    fn export_active_format_to_path(
+        &self,
+        expected_format: FormatKind,
+        destination: PathBuf,
+    ) -> Result<FormatFileExportReport, KernelError> {
+        let response = self.request(
+            &self.background,
+            Command::ExportActiveFormatToPath {
+                expected_format,
+                destination,
+            },
+        )?;
+        match response {
+            Response::FormatFileExported(report) => Ok(report),
             _ => Err(KernelError::UnexpectedResponse),
         }
     }
@@ -1870,6 +2046,10 @@ enum Command {
     ExportActiveFormat {
         expected_format: FormatKind,
     },
+    ExportActiveFormatToPath {
+        expected_format: FormatKind,
+        destination: PathBuf,
+    },
     UpsertTerm {
         request: UpsertTermRequest,
     },
@@ -1938,6 +2118,7 @@ enum Response {
     FormatBindings(Vec<FormatBindingReview>),
     FormatValidation(Vec<FormatValidationIssue>),
     FormatExported(FormatExportReport),
+    FormatFileExported(FormatFileExportReport),
     Terms(Vec<TermRecord>),
     Annotations(Vec<AnnotationRecord>),
     Markers(Vec<MarkerRecord>),
@@ -2294,6 +2475,23 @@ fn execute(
                 store.commit_sequence()?,
             )?))
         }
+        Command::ExportActiveFormatToPath {
+            expected_format,
+            destination,
+        } => {
+            let generation_id = store
+                .active_generation()?
+                .ok_or(rusqlite::Error::QueryReturnedNoRows)?;
+            ensure_generation_format(store, &generation_id, expected_format)?;
+            Ok(Response::FormatFileExported(export_format_to_path(
+                store,
+                root.join("objects"),
+                root.join("staging"),
+                &generation_id,
+                store.commit_sequence()?,
+                destination,
+            )?))
+        }
         Command::UpsertTerm { request } => {
             store.upsert_term(&request)?;
             Ok(Response::Done)
@@ -2509,9 +2707,10 @@ fn collect_format_units_from_worker(
     session_id: u64,
     generation_id: babel_domain::core::GenerationId,
     resource_id: babel_domain::core::ResourceId,
-) -> Result<Vec<ExtractedUnit>, KernelError> {
+) -> Result<(Vec<ExtractedUnit>, Option<u64>), KernelError> {
     let mut cursor = None;
     let mut units = Vec::new();
+    let mut worker_peak_rss_kib = None;
     loop {
         let reply: ExtractPageReply = client.request(&FormatWorkerRequest::ExtractPage {
             session_id,
@@ -2525,12 +2724,13 @@ fn collect_format_units_from_worker(
                 .map_err(|error| AdapterError::InvalidInput(error.to_string()))?;
         }
         units.extend(reply.page.items);
+        worker_peak_rss_kib = worker_peak_rss_kib.max(reply.worker_peak_rss_kib);
         cursor = reply.page.next_cursor;
         if cursor.is_none() {
             break;
         }
     }
-    Ok(units)
+    Ok((units, worker_peak_rss_kib))
 }
 
 struct FormatWorkerClient {
@@ -2548,7 +2748,7 @@ impl FormatWorkerClient {
             format.worker_capability().to_vec(),
         );
         launch.handshake_timeout = Duration::from_secs(5);
-        launch.request_timeout = FORMAT_WORKER_REQUEST_TIMEOUT;
+        launch.request_timeout = format.request_timeout();
         launch.max_response_bytes = MAX_FRAME_BYTES;
         Ok(Self {
             format,
@@ -2686,6 +2886,18 @@ fn format_budget(source_bytes: u64) -> TaskBudget {
     }
 }
 
+fn format_budget_for(format: FormatKind, source_bytes: u64) -> TaskBudget {
+    let mut budget = format_budget(source_bytes);
+    if format == FormatKind::Epub {
+        budget.timeout_ms = 120_000;
+        budget.maximum_bytes = source_bytes
+            .saturating_mul(8)
+            .clamp(FORMAT_PIPELINE_PAGE_BYTES, 4 * 1024 * 1024 * 1024);
+        budget.maximum_nodes = 2_000_000;
+    }
+    budget
+}
+
 fn cas_path(object_root: &Path, hash: &[u8; 32]) -> PathBuf {
     let encoded = hex::encode(hash);
     object_root
@@ -2711,16 +2923,18 @@ fn hash_parts(parts: &[&[u8]]) -> [u8; 32] {
 
 #[cfg(test)]
 mod tests {
-    use std::{process::Command as ProcessCommand, sync::Arc, sync::Once};
+    use std::{io::Write, process::Command as ProcessCommand, sync::Arc, sync::Once};
 
     use rusqlite::Connection;
     use sha2::{Digest, Sha256};
     use tempfile::TempDir;
+    use zip::{CompressionMethod, ZipArchive, ZipWriter, write::SimpleFileOptions};
 
     use super::*;
 
     static TXT_WORKER_BUILD: Once = Once::new();
     static MARKDOWN_WORKER_BUILD: Once = Once::new();
+    static EPUB_WORKER_BUILD: Once = Once::new();
 
     fn ensure_txt_worker_binary() {
         TXT_WORKER_BUILD.call_once(|| {
@@ -2745,6 +2959,76 @@ mod tests {
                 "babel-markdown-worker build failed: {status}"
             );
         });
+    }
+
+    fn ensure_epub_worker_binary() {
+        EPUB_WORKER_BUILD.call_once(|| {
+            let cargo = std::env::var("CARGO").unwrap_or_else(|_| "cargo".to_owned());
+            let status = ProcessCommand::new(cargo)
+                .args(["build", "--quiet", "-p", "babel-epub-worker"])
+                .status()
+                .expect("build babel-epub-worker");
+            assert!(status.success(), "babel-epub-worker build failed: {status}");
+        });
+    }
+
+    fn epub_fixture(spine: &[&str]) -> Vec<u8> {
+        let cursor = Cursor::new(Vec::new());
+        let mut writer = ZipWriter::new(cursor);
+        let spine_xml = spine
+            .iter()
+            .map(|id| format!(r#"<itemref idref="{id}"/>"#))
+            .collect::<String>();
+        let package = format!(
+            r#"<package version="3.0"><manifest><item id="c1" href="chapter1.xhtml" media-type="application/xhtml+xml"/><item id="c2" href="chapter2.xhtml" media-type="application/xhtml+xml"/><item id="nav" href="nav.xhtml" media-type="application/xhtml+xml" properties="nav"/><item id="css" href="style.css" media-type="text/css"/></manifest><spine>{spine_xml}</spine></package>"#
+        );
+        let entries = [
+            (
+                "mimetype",
+                b"application/epub+zip".as_slice(),
+                CompressionMethod::Stored,
+            ),
+            (
+                "META-INF/container.xml",
+                br#"<container><rootfiles><rootfile full-path="EPUB/package.opf"/></rootfiles></container>"#.as_slice(),
+                CompressionMethod::Deflated,
+            ),
+            (
+                "EPUB/package.opf",
+                package.as_bytes(),
+                CompressionMethod::Deflated,
+            ),
+            (
+                "EPUB/chapter1.xhtml",
+                br#"<html xmlns="http://www.w3.org/1999/xhtml"><body><h1>Title</h1><p>Alpha</p></body></html>"#.as_slice(),
+                CompressionMethod::Deflated,
+            ),
+            (
+                "EPUB/chapter2.xhtml",
+                br#"<html xmlns="http://www.w3.org/1999/xhtml"><body><p>Beta</p></body></html>"#.as_slice(),
+                CompressionMethod::Deflated,
+            ),
+            (
+                "EPUB/nav.xhtml",
+                br#"<html xmlns="http://www.w3.org/1999/xhtml"><body><nav><a href="chapter1.xhtml">One</a><a href="chapter2.xhtml">Two</a></nav></body></html>"#.as_slice(),
+                CompressionMethod::Deflated,
+            ),
+            (
+                "EPUB/style.css",
+                b"body { color: black; }".as_slice(),
+                CompressionMethod::Deflated,
+            ),
+        ];
+        for (name, bytes, method) in entries {
+            writer
+                .start_file(
+                    name,
+                    SimpleFileOptions::default().compression_method(method),
+                )
+                .unwrap();
+            writer.write_all(bytes).unwrap();
+        }
+        writer.finish().unwrap().into_inner()
     }
 
     #[test]
@@ -3604,6 +3888,99 @@ mod tests {
                 .translation
                 .as_deref(),
             Some("阿尔法")
+        );
+    }
+
+    #[test]
+    fn epub_import_save_reopen_export_and_spine_reorder_share_the_generic_core() {
+        ensure_epub_worker_binary();
+        let temp = TempDir::new().unwrap();
+        let project = temp.path().join("book.babel");
+        let source = epub_fixture(&["c1", "c2"]);
+        {
+            let kernel = Kernel::open(&project).unwrap();
+            let report = kernel
+                .import_epub_reader([12; 16], Cursor::new(source.clone()), 1_000)
+                .unwrap();
+            assert!(report.activated);
+            assert_eq!(report.units, 3);
+            assert_eq!(kernel.validate_active_epub().unwrap().len(), 3);
+            let units = kernel.query().unwrap().page_after(-1, 10).unwrap();
+            assert_eq!(
+                units
+                    .iter()
+                    .map(|unit| unit.source_text.as_str())
+                    .collect::<Vec<_>>(),
+                ["Title", "Alpha", "Beta"]
+            );
+            for unit in units {
+                let translation = match unit.source_text.as_str() {
+                    "Title" => "标题",
+                    "Alpha" => "阿尔法",
+                    "Beta" => "贝塔",
+                    other => panic!("unexpected EPUB source unit: {other}"),
+                };
+                kernel
+                    .save_translation(
+                        unit.source_unit_key.try_into().unwrap(),
+                        hash_parts(&[b"kernel-epub", unit.source_text.as_bytes()]),
+                        translation.to_owned(),
+                        2_000,
+                    )
+                    .unwrap();
+            }
+            assert!(kernel.validate_active_epub().unwrap().is_empty());
+        }
+
+        let kernel = Kernel::open(&project).unwrap();
+        assert!(kernel.validate_active_epub().unwrap().is_empty());
+        let destination = temp.path().join("translated.epub");
+        let export = kernel.export_active_epub_to_path(&destination).unwrap();
+        assert_eq!(export.path, destination);
+        assert_eq!(
+            export.byte_length,
+            fs::metadata(&destination).unwrap().len()
+        );
+        let mut archive = ZipArchive::new(File::open(&destination).unwrap()).unwrap();
+        let mut chapter = String::new();
+        archive
+            .by_name("EPUB/chapter1.xhtml")
+            .unwrap()
+            .read_to_string(&mut chapter)
+            .unwrap();
+        assert!(chapter.contains("标题"));
+        assert!(chapter.contains("阿尔法"));
+        let mut stylesheet = String::new();
+        archive
+            .by_name("EPUB/style.css")
+            .unwrap()
+            .read_to_string(&mut stylesheet)
+            .unwrap();
+        assert_eq!(stylesheet, "body { color: black; }");
+        drop(archive);
+        let original_export = fs::read(&destination).unwrap();
+        assert!(matches!(
+            kernel.export_active_epub_to_path(&destination),
+            Err(KernelError::Adapter(AdapterError::Io(_)))
+        ));
+        assert_eq!(fs::read(&destination).unwrap(), original_export);
+
+        let reordered = kernel
+            .import_epub_reader([13; 16], Cursor::new(epub_fixture(&["c2", "c1"])), 3_000)
+            .unwrap();
+        assert!(reordered.activated);
+        assert_eq!(reordered.review_required, 0);
+        let units = kernel.query().unwrap().page_after(-1, 10).unwrap();
+        assert_eq!(
+            units
+                .iter()
+                .map(|unit| (unit.source_text.as_str(), unit.translation.as_deref()))
+                .collect::<Vec<_>>(),
+            [
+                ("Beta", Some("贝塔")),
+                ("Title", Some("标题")),
+                ("Alpha", Some("阿尔法")),
+            ]
         );
     }
 }

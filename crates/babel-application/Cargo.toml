@@ -9,6 +9,7 @@ rust-version.workspace = true
 babel-adapter-host = { path = "../babel-adapter-host" }
 babel-adapter-protocol = { path = "../babel-adapter-protocol" }
 babel-domain = { path = "../babel-domain" }
+babel-epub-adapter = { path = "../babel-epub-adapter" }
 babel-markdown-adapter = { path = "../babel-markdown-adapter" }
 babel-resource-graph = { path = "../babel-resource-graph" }
 babel-runtime = { path = "../babel-runtime" }
@@ -24,3 +25,4 @@ thiserror.workspace = true
 
 [dev-dependencies]
 tempfile.workspace = true
+zip.workspace = true

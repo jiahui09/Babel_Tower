@@ -1,0 +1,19 @@
+{
+  "verdict": "FALSIFIED",
+  "input_bytes": 528225659,
+  "expanded_bytes": 2147483648,
+  "members": 5000,
+  "units": 100000,
+  "chapters": 100,
+  "adapter_first_content_ms": 1480,
+  "full_import_ms": 99089,
+  "cold_open_ms": 539,
+  "export_ms": 1690,
+  "peak_rss_mib": 1824.5703125,
+  "thresholds": {
+    "adapter_first_content_ms": 8000,
+    "full_import_ms": 90000,
+    "export_ms": 60000,
+    "peak_rss_mib": 1536.0
+  }
+}

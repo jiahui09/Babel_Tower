@@ -1,7 +1,7 @@
 //! Versioned, bounded protocol shared by the core and built-in format adapters.
 
 use std::{
-    io::{Read, Seek},
+    io::{Read, Seek, Write},
     sync::{
         Arc,
         atomic::{AtomicBool, Ordering},
@@ -17,7 +17,7 @@ use serde::{Deserialize, Serialize};
 use thiserror::Error;
 
 pub const ADAPTER_PROTOCOL_MAJOR: u32 = 1;
-pub const ADAPTER_PROTOCOL_MINOR: u32 = 2;
+pub const ADAPTER_PROTOCOL_MINOR: u32 = 3;
 pub const DEFAULT_PAGE_BYTES: u64 = 256 * 1024;
 pub const DEFAULT_PAGE_NODES: u32 = 1_000;
 
@@ -99,6 +99,9 @@ pub struct StagingHandle {
 pub trait ReadSeek: Read + Seek + Send {}
 impl<T: Read + Seek + Send> ReadSeek for T {}
 
+pub trait WriteSeek: Write + Seek + Send {}
+impl<T: Write + Seek + Send> WriteSeek for T {}
+
 pub trait CapabilityIo: Send + Sync {
     fn open_object(&self, handle: &ObjectHandle) -> Result<Box<dyn ReadSeek>, AdapterError>;
     fn write_staging_at(
@@ -108,6 +111,10 @@ pub trait CapabilityIo: Send + Sync {
         bytes: &[u8],
     ) -> Result<(), AdapterError>;
     fn open_staging(&self, handle: &StagingHandle) -> Result<Box<dyn ReadSeek>, AdapterError>;
+    fn open_staging_writer(
+        &self,
+        handle: &StagingHandle,
+    ) -> Result<Box<dyn WriteSeek>, AdapterError>;
 }
 
 #[derive(Clone, Debug, PartialEq, Eq, Serialize, Deserialize)]
