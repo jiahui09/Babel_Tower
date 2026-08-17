@@ -1,0 +1,68 @@
+{
+  "active": false,
+  "current_phase": "handoff-complete",
+  "state": {
+    "interview_id": "5565ec9c-cdf4-4171-a2d4-6a2c67acf1ed",
+    "profile": "standard",
+    "type": "greenfield",
+    "initial_idea": "Offline-first desktop translation workbench for individual translators",
+    "rounds": [
+      {
+        "round": 1,
+        "target": "outcome",
+        "question": "本轮应交付哪类成果？",
+        "answer": "技术架构方案",
+        "scores": {
+          "intent": 0.95,
+          "outcome": 0.8,
+          "scope": 0.7,
+          "constraints": 0.9,
+          "success": 0.4
+        }
+      },
+      {
+        "round": 2,
+        "target": "decision-boundaries",
+        "question": "技术架构方案应达到哪种深度？",
+        "answer": "确定桌面框架、编程语言、存储、编辑器内核、OCR 与打包方案，形成可立即开工的实施蓝图",
+        "scores": {
+          "intent": 0.95,
+          "outcome": 0.95,
+          "scope": 0.85,
+          "constraints": 0.9,
+          "success": 0.55
+        }
+      },
+      {
+        "round": 3,
+        "target": "distribution-constraint-pressure-pass",
+        "question": "完整离线 OCR 与安装包体积冲突时采用何种分发方式？",
+        "answer": "单个较大的完整离线安装包",
+        "scores": {
+          "intent": 0.98,
+          "outcome": 0.98,
+          "scope": 0.95,
+          "constraints": 0.98,
+          "success": 0.7
+        }
+      }
+    ],
+    "current_ambiguity": 0.07,
+    "threshold": 0.2,
+    "max_rounds": 12,
+    "challenge_modes_used": [],
+    "codebase_context": "Empty workspace; not a Git repository",
+    "current_stage": "intent-first",
+    "current_focus": "ralplan-consensus-complete",
+    "context_snapshot_path": ".omx/context/offline-translation-workbench-20260816T125753Z.md",
+    "transcript_path": ".omx/interviews/offline-translation-workbench-20260816T132642Z.md",
+    "spec_path": ".omx/specs/deep-interview-offline-translation-workbench.md",
+    "readiness_gates": {
+      "non_goals": "complete",
+      "decision_boundaries": "complete",
+      "pressure_pass": "complete",
+      "closure_audit": "complete"
+    },
+    "state_persistence_note": "Recovered via file because omx CLI is unavailable in this shell"
+  }
+}
