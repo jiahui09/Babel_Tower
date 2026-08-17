@@ -1,493 +1,602 @@
-# Design
+# Babel Tower 设计说明
 
-## Source of truth
+## 设计事实源
 
-- Status: Draft — complete first-version design, pending product review
-- Last refreshed: 2026-08-17
-- Primary product surfaces: project library, import, project overview, long-form workspace, structured-unit workspace, resource workspace, validation, export history, recovery and diagnostics.
-- Evidence reviewed: `.omx/plans/prd-offline-translation-workbench.md`, `.omx/plans/architecture-offline-translation-workbench.md`, `.omx/plans/test-spec-offline-translation-workbench.md`, `.omx/specs/deep-interview-offline-translation-workbench.md`.
-- Observed facts: this is a greenfield repository without UI source, existing components, visual assets, screenshots, routes, or brand kit.
-- Design inference: the initial design must optimize sustained, focused translation work rather than acquisition, dashboards, or generic document management.
+- 状态：第二版收敛设计草案，已吸收第一轮产品审查，等待定稿审查。
+- 最后更新：2026-08-17。
+- 主要界面：项目库、导入、翻译现场（长文、单元、资源三种观察方式）、按需项目状态、问题与校验、导出记录、恢复与诊断。
+- 已审阅资料：`.omx/plans/prd-offline-translation-workbench.md`、`.omx/plans/architecture-offline-translation-workbench.md`、`.omx/plans/test-spec-offline-translation-workbench.md`、`.omx/specs/deep-interview-offline-translation-workbench.md`。
+- 已知事实：仓库仍是新项目，没有现有界面代码、组件、视觉素材、截图、路由或品牌资产。
+- 产品结论：Babel Tower 是以长篇人工翻译为核心、能够安全处理结构化内容与关联图片的个人离线翻译工作台，不是追求覆盖一切格式的通用本地化平台。
 
-## Brand
+### 产品中心
 
-- Personality: calm, exacting, literary, dependable, and quietly capable.
-- Trust signals: persistent save state, visible project name and source format, reversible commands, precise diagnostics, restrained motion, and predictable location in the project.
-- Avoid: IDE/terminal metaphors, AI-assistant visual language, marketing-style hero composition, decorative gradients, oversized empty cards, excessive rounded containers, noisy status badges, and exposed parser/worker terminology.
-- Product name treatment: `Babel Tower` appears in the application title bar and project library header; it is not a decorative splash screen.
+```text
+                    Babel Tower
+                         │
+              ┌──────────┴──────────┐
+              │                     │
+          翻译工作核心           交付保障系统
+              │                     │
+       ┌──────┼──────┐       ┌──────┼──────┐
+       长文   单元   资源     保存   校验   导出
+```
 
-## Product goals
+- “长文、单元、资源”是同一翻译现场的三种观察方式，不是三个子产品。
+- 保存、恢复、任务和诊断默认在幕后工作；只有需要用户决定时才进入前景。
+- 校验和导出是翻译流程末端的交付动作，不与翻译模式争夺一级导航权重。
+- 产品的首要承诺是“帮助人高效、可靠地完成翻译”，而不是“管理一个复杂的本地化系统”。
 
-- Goals:
-  - Keep translators in their current text, unit, or image region with as little interface management as possible.
-  - Make the three workspaces feel like different lenses over one project, not three separate tools.
-  - Make save, recovery, validation, and export understandable without exposing implementation details.
-  - Keep the offline, human-authored nature of every translation visible in system behavior, not promotional copy.
-- Non-goals:
-  - Do not optimize for AI generation, chat, social collaboration, admin dashboards, or developer extensibility in version one.
-  - Do not use navigation depth, cards, or settings pages to reveal internal architecture.
-  - Do not make a touch-first mobile experience; the application is a desktop writing environment.
-- Success signals:
-  - A translator can reopen a project and resume the exact chapter/unit without searching for it.
-  - Switching workspace preserves selection/context where a compatible target exists.
-  - An export block explains the affected content and the next user action in plain language.
-  - Core editing commands remain discoverable by keyboard and do not shift layout while saving.
+## 品牌与气质
 
-## Personas and jobs
+- 气质：安静、准确、有文学感、可靠、克制。
+- 信任信号：始终可见的保存状态、清楚的项目和来源格式、可撤销操作、明确诊断、克制动效、稳定的当前位置。
+- 避免：终端或集成开发环境隐喻、人工智能助手视觉语言、营销式首屏、装饰性渐变、巨型空卡片、过度圆角、嘈杂状态徽章，以及向用户暴露解析器或后台进程等术语。
+- 名称：`Babel Tower` 出现在应用标题栏和项目库标题中，不作为装饰性启动页。
 
-- Primary personas:
-  - Individual literary translator: spends hours reading and drafting chapter-length translations.
-  - Hobby localization translator: needs strict source/target correspondence and format-safe delivery.
-  - Small independent localization worker: handles text plus image lettering, then validates a final artifact.
-- User jobs:
-  - Import an original work safely and understand what is ready to translate.
-  - Read context, write a human translation, mark progress, and continue later.
-  - Find unfinished, blocked, or inconsistent content quickly.
-  - Review image text, edit its transcription/translation, and preview embedded text.
-  - Deliver a new file while preserving the original and understanding any limitations.
-- Key contexts of use: offline, long uninterrupted writing sessions, laptop or desktop monitors, mixed CJK/Latin text, keyboard-heavy operation, and projects containing thousands of units.
+## 产品目标
 
-## Information architecture
+- 让译者尽量留在当前文字、单元或图片区域，不被界面管理打断。
+- 让三种工作空间成为同一项目的三种视角，而不是三套工具。
+- 提供真正帮助翻译工作的语境、术语、历史译文、批注和一致性能力。
+- 用普通语言呈现保存、恢复、校验和导出，不暴露内部实现。
+- 从行为上体现“离线、人工写译文”，而不是用宣传语强调它。
 
-- Primary navigation:
-  - Project library is the application root.
-  - Import is a focused flow, not a permanent sidebar destination.
-  - Inside a project, a persistent project rail provides `内容`, `单元`, `资源`, `校验`, and `导出`.
-  - The active content workspace changes the central canvas; project identity, save state, tasks, and export remain globally available.
-- Core routes/screens:
+### 非目标
 
-  | Route | Purpose | Entry and exit rules |
-  | --- | --- | --- |
-  | `/` | Project library and resume entry | Opens the last project only on an explicit Resume action; never auto-redirects while a recovery decision is pending. |
-  | `/import` | Import source, name project, review extracted result | Cancel returns to `/`; success goes once to `/projects/:projectId/overview`. |
-  | `/projects/:projectId/overview` | Project status, recent location, format summary, blockers | Resume enters the last valid workspace/location; no automatic redirect if there is no content. |
-  | `/projects/:projectId/content/:chapterId?unit=:unitId` | Long-form workspace | A chapter/unit selection is optional and normalized only once after project data loads. |
-  | `/projects/:projectId/units?filter=&unit=` | Structured-unit workspace | Search/filter are query parameters; selection changes URL without leaving the workspace. |
-  | `/projects/:projectId/resources?resource=&region=` | Resource workspace | A selected region is optional; missing/deleted targets show an in-place empty state rather than redirecting. |
-  | `/projects/:projectId/validate` | Validation results and resolution navigation | Resolving an item opens its workspace target in a new route, then Back returns here. |
-  | `/projects/:projectId/exports/:runId?` | Export setup, progress, results, and history | Export is a dialog/flow over this route; completion remains in export history. |
-  | `/recovery/:projectId` | Explicit crash/recovery decision | Complete recovery returns to the project overview; no route silently discards pending local UI edits. |
-- Route guards:
-  - Unknown project: show a recoverable "项目不可用" screen with Library and Locate Project actions, never bounce between routes.
-  - Missing optional chapter/unit/resource query target: retain the current workspace and show a non-blocking "该内容已不可用" notice.
-  - Unconfirmed import, export destination conflict, and recovery choice use a modal decision; browser-like Back must return to the prior stable route, not restart a flow.
-  - Navigation never depends on save acknowledgement for route completion; pending edits stay represented in the shared save state.
-- Content hierarchy:
-  - Level 1: application / project identity.
-  - Level 2: persistent workspace destination.
-  - Level 3: chapter, collection, filter, or resource.
-  - Level 4: selected unit/region and inspector detail.
+- 首版不服务机器翻译、聊天、社交协作、后台管理和开发者扩展。
+- 不用层层导航、卡片墙或设置页展示内部架构。
+- 不做触摸优先的移动端体验；这是桌面写作环境。
 
-## Design principles
+### 成功信号
 
-1. Translation comes first. The editable target text is the visual primary action; interface chrome remains compact and stable.
-2. Location is never implicit. The project, workspace, chapter/filter, and selected content must be readable at a glance.
-3. State must be calm but unambiguous. Saving, blocked export, and task failures are specific, persistent when needed, and never represented only by color.
-4. One object, many lenses. A unit selected in long-form or structured mode is the same unit; selection/context follows it when the user deliberately switches mode.
-5. Complexity lives behind progressive disclosure. The default surface uses human language; raw diagnostics, source anchors, and technical detail appear only on request.
-6. Long sessions deserve visual restraint. Stable columns, no layout jumps, moderate density, and strong typography matter more than decoration.
-- Tradeoffs: use compact desktop density over touch-target maximalism; use a disciplined component system over page-specific novelty; use native dialog patterns for irreversible export/recovery decisions over custom animated flows.
+- 用户重新打开项目后，无需搜索即可回到上次的章节或单元。
+- 切换工作空间时，兼容的选中内容与上下文被保留。
+- 导出受阻时，用户知道受影响内容、原因和下一步。
+- 高频操作可通过键盘找到，保存状态变化不引起布局跳动。
 
-## Visual language
+## 用户与任务
 
-- Color:
-  - Canvas: `#F7F8F7`; raised surface: `#FFFFFF`; quiet inset: `#EEF1F0`; border: `#D7DDDA`.
-  - Ink: `#1C2421`; secondary text: `#5C6762`; muted text: `#7B8580`.
-  - Primary action/focus: `#166B5B`; hover: `#0F5548`; focus ring: `#7AC6B6`.
-  - Informational selection: `#DDECF5` with ink `#1C4E67`; draft: `#DCECE6`; reviewed: `#D9E9D5`; warning: `#FFF0C7`; destructive: `#B83B3B`.
-  - Use semantic CSS variables (`--surface`, `--text`, `--accent`, `--warning`, etc.), never raw colors in feature components. Status always combines color, icon, and text.
-- Typography:
-  - UI: `Inter, Noto Sans SC, system-ui, sans-serif`.
-  - Reading/editor content: `Noto Serif SC, Source Han Serif SC, serif`; user may choose an installed local reading font.
-  - UI body 14px / 20px, compact metadata 12px / 16px, section title 16px / 24px, page title 20px / 28px. Editor defaults to 18px / 1.8 with a user-controlled reading-size range.
-  - No viewport-based font scaling and no negative letter spacing.
-- Spacing/layout rhythm:
-  - Base unit: 4px. Primary gaps: 8, 12, 16, 24, 32px.
-  - Desktop shell: top bar 48px; left project rail 232px; contextual list pane 280px; inspector 320px; center canvas flexes with a 680px minimum writing width where space allows.
-  - Resizable panes have persistent per-project widths. At narrow desktop widths, the contextual list and inspector become toggled side sheets; the editor never drops below a usable line length.
-- Shape/radius/elevation:
-  - Inputs, menus, popovers, dialogs, and repeated item cards use 6px radius.
-  - Toolbar/icon buttons are 32px square; compact 28px only inside dense tables.
-  - Sections are layout bands, not floating cards. Borders and subtle surface contrast define hierarchy; shadows are reserved for menus, dialogs, and drag previews.
-- Motion:
-  - 120-180ms opacity/position transitions for sheets, menus, and save-state changes; no decorative animation.
-  - Respect `prefers-reduced-motion`; operations must remain legible without motion.
-- Imagery/iconography:
-  - Use Lucide icons at 16px or 18px, paired with text for non-obvious commands.
-  - Resource mode uses actual project images only. Do not use stock or illustrative artwork as filler.
+### 主要用户
 
-## Components
+- 个人文学译者：连续阅读、写作数小时，重视语境和阅读舒适度。
+- 业余汉化者：需要源文与译文严格对应，并安全交付原格式资源。
+- 小型本地化工作者：处理正文、图片文字和最终校验。
 
-- Component foundation:
-  - `shadcn/ui` component source + Radix UI primitives for accessible dialogs, menus, popovers, tabs, tooltips, scroll areas, switches, separators, and form controls.
-  - Tailwind CSS consumes semantic CSS variable tokens; `class-variance-authority` defines supported variants.
-  - Lucide supplies all application icons. Tiptap, TanStack Virtual, and Canvas are specialized internals, not visual design systems.
-- New/changed domain components:
-  - `AppShell`: title bar, project rail, central canvas, optional context pane/inspector, task and save affordances.
-  - `ProjectLibrary`: project rows, last location, source format, progress, actions, empty state.
-  - `WorkspaceSwitcher`: compact segmented control for 内容 / 单元 / 资源; routes are distinct but control state follows the current route.
-  - `SaveIndicator`: `正在编辑` / `正在保存` / `已保存` / `保存失败`; fixed-width region so text changes never move surrounding controls.
-  - `ChapterNavigator`, `UnitFilterBar`, `ResourceNavigator`: workspace-specific contextual panes.
-  - `TranslationEditor`: source context, protected inline tokens, target editor, unit state control, previous/next navigation.
-  - `UnitTable`: virtualized two-column source/target rows, status filter, bulk state tools, keyboard selection.
-  - `ResourceCanvas`: image viewport, selectable region overlays, zoom, reading order, transcription/translation inspector.
-  - `InspectorPanel`: metadata, source context, notes, diagnostics, and only task-relevant controls.
-  - `ValidationList`, `TaskCenter`, `ExportDialog`, `RecoveryDialog`, `DiagnosticDrawer`.
-- Variants and states:
-  - Buttons: `primary`, `secondary`, `ghost`, `destructive`, `icon`; no arbitrary custom variants in feature code.
-  - Status: `untranslated`, `draft`, `translated`, `reviewed`, `blocked` has fixed icon/text/color mapping.
-  - Inputs/editor: default, focused, saving, error, read-only, disabled; error includes an actionable text explanation.
-  - Dialogs: confirmation for destructive/replacement choices; progress dialogs cannot be dismissed when it would leave an operation ambiguous, but support backgrounding when safe.
-- Token/component ownership:
-  - `apps/desktop/src/design/tokens.css`: CSS variables and semantic token documentation.
-  - `apps/desktop/src/components/ui/`: vendored/maintained shadcn primitives; no product rules.
-  - `apps/desktop/src/components/workbench/`: reusable domain components and layout contracts.
-  - Feature routes compose domain components; they do not create ad hoc buttons, colors, dialogs, or shadows.
+### 用户任务
 
-## Accessibility
+- 安全导入原作，并理解哪些内容可以翻译。
+- 阅读上下文、写入人工译文、标记进度并在之后继续。
+- 快速找到未完成、受阻或不一致内容。
+- 查看图片文字、修正识别原文、填写人工译文并预览嵌字。
+- 导出新文件，同时保留原件并了解任何限制。
 
-- Target standard: WCAG 2.2 AA for application controls and reading surfaces.
-- Keyboard/focus behavior:
-  - Every command has a visible focus state. Dialog focus is trapped and restored to its invoker.
-  - `Tab` traverses controls predictably; arrow keys navigate lists/tables only when those widgets own focus.
-  - `Ctrl/Cmd+S`, undo/redo, global search, workspace switching, next/previous unit, and inspector toggle have documented shortcut support with menu discoverability.
-  - Editor shortcuts must not be intercepted while composing CJK input; IME composition is tested explicitly.
-- Contrast/readability: normal text and controls meet AA contrast; editor uses no low-contrast placeholder-as-content; line length is constrained and reading size can be increased independently of UI density.
-- Screen-reader semantics: landmarks for app navigation/main/inspector; table/list semantics match interaction model; icon-only controls require names/tooltips; live regions announce save errors and task completion without narrating every keystroke.
-- Reduced motion and sensory considerations: no auto-playing media; reduced-motion setting removes pane slide animations; warnings do not flash.
+### 使用环境
 
-## Responsive behavior
+断网、长时间写作、桌面或笔记本电脑、中日韩与拉丁文字混排、键盘高频操作，以及包含数千乃至十万单元的项目。
 
-- Supported breakpoints/devices: Windows and Arch desktop windows from 1024px wide upward; primary acceptance widths are 1280x800, 1440x900, and 1920x1080. Below 1024px is supported as a constrained desktop window, not as a mobile layout.
-- Layout adaptations:
-  - >= 1440px: project rail, context pane, central canvas, and inspector may be visible together.
-  - 1024-1439px: project rail remains; only one secondary pane is visible at a time, controlled by icon buttons with tooltips.
-  - < 1024px: rails collapse to sheets; long-form editor remains primary; export/validation use full-height dialogs or dedicated routes.
-  - Tables retain stable row heights and horizontal scrolling where needed; columns do not squeeze text into unreadable fragments.
-- Touch/hover differences: mouse/keyboard is the primary interaction. Hover reveals secondary row actions only when the same actions are keyboard-accessible and present in an overflow menu.
+## 信息架构与路由
 
-## Interaction states
+### 一级导航
 
-- Loading: render the shell immediately with skeleton rows/paragraphs that preserve final layout. Never show an empty editor while a chapter is loading without a clear loading state.
-- Empty:
-  - Library: a single unframed import affordance with a concise project-focused description.
-  - Project with no extracted content: show extraction result and diagnostic entry, not a generic blank page.
-  - Filter has no results: retain filters and offer one clear reset action.
-- Error: inline errors remain adjacent to the blocked control; operation failures also enter Task Center/Diagnostic Drawer with retry or reveal-in-context actions. No raw stack traces in the normal surface.
-- Success: use stable status text and optional low-priority toast. Do not use celebratory animation for routine saves or exports.
-- Disabled: explain why in supporting text or tooltip, especially for blocked export, unavailable undo, and image operations requiring a selected region.
-- Offline/slow network: the product assumes offline. No spinner or warning for absent network; only local file, OCR, indexing, import, export, and disk-space states are shown.
-- Save state: editing is local UI state; `saved` appears only after authoritative acknowledgement. Failure preserves typed content and exposes retry without making the editor look complete.
+- 项目库是应用根页面。
+- 导入是一次性流程，不进入项目内导航。
+- 打开项目后直接进入上次翻译位置；项目总览不再是必经页面。
+- 项目内只有一个一级目的地：`翻译`。`长文`、`单元`、`资源`位于翻译现场顶部，是轻量观察方式切换。
+- `校验`从顶栏“问题”入口打开，可进入独立结果页；`导出`是顶栏主命令，导出记录在其菜单中打开。
+- 项目状态、来源信息和备份能力从项目名称菜单进入，不占据常驻侧栏。
 
-## Content voice
+### 页面与路由
 
-- Tone: concise, composed, practical, and non-technical by default.
-- Terminology:
-  - Use `项目`, `原件`, `译文`, `单元`, `资源`, `校验`, `导出`, `任务`, and `问题`.
-  - Do not expose `sidecar`, `worker`, `parser`, `IPC`, `runtime`, or `WAL` in routine UI. Use `文字识别`, `内容处理`, `检查`, or `详细信息` where appropriate.
-- Microcopy rules:
-  - Name the user-visible result first: `无法导出此章节` rather than `导出任务失败`.
-  - Tell the user what remains safe: `原件和已保存译文未改变`.
-  - Give one next action: `查看问题`, `重试`, `选择其他位置`, or `返回项目`.
-  - Avoid AI-like invitations, exclamation marks, vague praise, and jargon-heavy warnings.
+| 路径 | 中文页面 | 用途与规则 |
+| --- | --- | --- |
+| `/` | 项目库 | 显式点击“继续”才恢复项目；有恢复决策时绝不自动跳转。 |
+| `/import` | 导入作品 | 取消回到项目库；成功后直接进入首个可翻译位置。 |
+| `/projects/:projectId/overview` | 项目状态 | 按需查看项目摘要、来源和最近导出；不是打开项目的必经页面。 |
+| `/projects/:projectId/content/:chapterId?unit=:unitId` | 长文模式 | 章节和单元可选；数据加载后只规范化一次。 |
+| `/projects/:projectId/units?filter=&unit=` | 单元模式 | 搜索与筛选写入查询参数；选择变化不离开本页。 |
+| `/projects/:projectId/resources?resource=&region=` | 资源模式 | 区域可选；目标不存在时显示原位空状态，不重定向。 |
+| `/projects/:projectId/validate` | 问题与校验 | 从顶栏问题入口进入；跳到目标内容后，返回应回到当前筛选的问题列表。 |
+| `/projects/:projectId/exports/:runId?` | 导出记录 | 从导出菜单进入；新建导出是覆盖在当前翻译现场上的对话流程。 |
+| `/recovery/:projectId` | 恢复项目 | 只有需要用户决定时进入；完成后回到最近有效的翻译位置。 |
 
-## Implementation constraints
+### 路由守卫
 
-- Framework/styling system: React 19 + TypeScript + Vite inside Tauri 2. Use shadcn/ui + Radix UI + Tailwind CSS + Lucide. Use CSS variables for tokens and `class-variance-authority` for component variants.
-- Design-token constraints: all colors, spacing, radii, typography, z-index, durations, and pane dimensions come from design tokens. Feature code may not introduce raw hex colors, arbitrary shadows, or one-off component variants without updating this document and the token layer.
-- Performance constraints:
-  - Do not render all units or a whole book chapter set at once; virtualize structured lists and window long-form chapters.
-  - Saving must not cause editor remount, scroll jump, selection loss, or layout shifts.
-  - Canvas redraw is scoped to visible image regions; thumbnails load lazily.
-- Compatibility constraints: offline-first; CJK IME support; Windows and Arch desktop; no remote font, icon, asset, analytics, or AI dependency. Respect the architecture plan's Tauri platform gates.
-- Test/screenshot expectations:
-  - Storybook or an equivalent isolated component harness covers every domain component state.
-  - Playwright desktop smoke tests cover all routes, all route guards, CJK IME composition, keyboard navigation, save/recovery states, and export/validation handoffs.
-  - Capture visual baselines at 1280x800 and 1440x900 for the library, all three workspaces, validation, export, empty, loading, and error states.
-  - Review screenshots for overlap, truncation, focus visibility, unstable toolbar widths, and accidental generic-dashboard aesthetics before merge.
+- 找不到项目：显示“项目不可用”，提供“返回项目库”和“重新定位项目”；不在页面之间反复跳转。
+- 章节、单元或资源参数失效：保留当前工作空间，提示“该内容已不可用”。
+- 未确认导入、导出同名冲突和恢复决定，使用明确的对话框；返回只回到上一个稳定页面，不重启流程。
+- 页面跳转不等待保存确认；待保存内容通过全局保存状态表示。
+- 项目库中的主操作“继续翻译”直接进入最近有效的翻译路由；只有恢复选择、项目损坏或内容不存在时才中断。
 
-## Open questions
+### 内容层级
 
-- [ ] Logo, application icon, and final wordmark treatment / product owner / affects installer, title bar, and project library identity.
-- [ ] Default CJK serif font licensing and packaged size / engineering + product owner / affects offline package size and long-form reading quality.
-- [ ] Whether translators need personal annotations separate from source/translation content / product owner / affects inspector and data model.
-- [ ] Whether a compact dark theme belongs in version one / product owner / affects token completeness and visual QA scope.
-- [ ] Exact keyboard shortcut map and localization language set / product owner + UX / affects command menu and accessibility validation.
-- [ ] Which EPUB structural diagnostics should be elevated from detail view to blocking validation / format engineering / affects validation information hierarchy.
+1. 应用与项目身份。
+2. 翻译现场。
+3. 长文、单元或资源观察方式。
+4. 章节、筛选、资源以及被选中的单元或区域。
+5. 按需出现的检查、问题和交付细节。
 
-## Application shell and layout
+## 设计原则
 
-The standard project window is a persistent workbench, not a collection of full-page cards. It has one stable frame and replaces only the workspace canvas and its contextual pane.
+1. 译文优先：可编辑的目标文字是视觉主角，界面框架保持紧凑稳定。
+2. 位置明确：项目、工作空间、章节或筛选条件、当前内容必须一眼可见。
+3. 状态安静但明确：保存、阻止导出和任务失败必须具体，不能只靠颜色。
+4. 一个对象，多种视角：长文和单元模式的同一单元必须是同一对象。
+5. 渐进披露：默认界面使用用户语言，原始锚点和技术细节按需展开。
+6. 尊重长时间工作：稳定列宽、不跳动的布局、适度信息密度与良好排版比装饰重要。
+7. 观察方式切换不是页面切换感：保持当前对象、滚动语境和操作意图，界面框架不整体重建。
+8. 系统能力后退：保存、任务、诊断和恢复只在异常或明确请求时占用注意力。
+
+取舍：优先紧凑桌面密度，而不是触摸优先的大控件；优先统一组件，而不是每页求新；不可逆决策使用标准对话框，而不是炫目的流程动画。
+
+## 视觉语言
+
+### 色彩
+
+- 主画布：`#F7F8F7`；抬升表面：`#FFFFFF`；内嵌浅面：`#EEF1F0`；边框：`#D7DDDA`。
+- 正文：`#1C2421`；次要文字：`#5C6762`；弱化文字：`#7B8580`。
+- 主操作与焦点：`#166B5B`；悬停：`#0F5548`；焦点环：`#7AC6B6`。
+- 信息选中：`#DDECF5` 配 `#1C4E67`；草稿：`#DCECE6`；已审校：`#D9E9D5`；警告：`#FFF0C7`；危险：`#B83B3B`。
+- 所有颜色必须映射为语义变量，如 `--surface`、`--text`、`--accent`、`--warning`。业务组件不得直接写十六进制颜色。状态同时使用颜色、图标和文字。
+
+### 字体
+
+- 界面字体：`Inter, Noto Sans SC, system-ui, sans-serif`。
+- 阅读和编辑字体：`Noto Serif SC, Source Han Serif SC, serif`；用户可以选择已安装的本地阅读字体。
+- 界面正文为 14px / 20px，紧凑元信息为 12px / 16px，分区标题为 16px / 24px，页面标题为 20px / 28px。
+- 编辑器默认 18px、行高 1.8，提供独立的阅读字号调整。
+- 不使用随视口变化的字号，也不使用负字距。
+
+### 间距与布局
+
+- 基础单位为 4px；常用间距为 8、12、16、24、32px。
+- 顶栏 48px；上下文面板默认 236px；辅助面板 320px 且默认关闭；中央写作区尽量不小于 680px。
+- 面板可拖动调整，宽度按项目记忆；窗口变窄时，上下文和辅助面板改为互斥侧滑层，编辑器不被压成狭窄列。
+
+### 形状、层级和动效
+
+- 输入框、菜单、浮层、对话框和重复条目使用 6px 圆角。
+- 工具栏图标按钮固定 32px 方形；密集表格内可使用 28px。
+- 页面分区不是悬浮卡片。层级由边框、留白和轻微表面差异建立；阴影只用于菜单、对话框和拖动预览。
+- 面板、菜单和保存状态使用 120-180ms 的透明度或位移变化；不使用装饰性动画。
+- 遵守系统“减少动效”设置。
+
+### 图标与图像
+
+- 全部图标来自 Lucide，尺寸 16px 或 18px；不直观的命令必须搭配文字或悬停提示。
+- 资源模式只展示项目真实图片；没有品牌素材前，不使用图库或插画填充空白。
+
+## 统一组件体系
+
+### 基础层
+
+- 使用 `shadcn/ui` 的组件源码和 Radix UI 原语，提供可访问的对话框、菜单、浮层、标签页、工具提示、滚动区、开关、分隔线和表单控件。
+- 使用 Tailwind CSS 消费语义化 CSS 变量，使用 `class-variance-authority` 约束变体。
+- 使用 Lucide 作为唯一图标来源。
+- Tiptap、TanStack Virtual 和 Canvas 是专业能力，不另行建立视觉体系。
+
+### 领域组件
+
+| 代码组件 | 中文职责 |
+| --- | --- |
+| `AppShell` | 顶栏、翻译现场、可收起上下文面板、按需辅助面板、任务和保存入口。 |
+| `ProjectLibrary` | 项目条目、上次位置、来源格式、进度、空状态。 |
+| `WorkspaceSwitcher` | 长文、单元、资源三种观察方式的紧凑切换；保持当前对象，不制造进入另一子系统的感觉。 |
+| `SaveIndicator` | 显示“正在编辑、正在保存、已保存、保存失败”；预留固定宽度。 |
+| `ChapterNavigator`、`UnitFilterBar`、`ResourceNavigator` | 三种工作空间各自的上下文导航。 |
+| `TranslationEditor` | 来源上下文、受保护内联结构、译文编辑器、状态和前后导航。 |
+| `UnitTable` | 虚拟化源译对照、筛选、批量状态与键盘选择。 |
+| `ResourceCanvas` | 图片缩放、区域选择、识别结果修正、基础文字排版预览。 |
+| `TranslationTools` | 当前单元的术语命中、项目历史译文、重复句、前后文、长度和格式提示。 |
+| `AnnotationPanel` | 与单元绑定的个人批注、待确认事项和标记。 |
+| `InspectorPanel` | 按需打开的辅助面板，承载翻译工具、批注、元信息和问题，不常驻。 |
+| `ValidationList`、`TaskCenter`、`ExportDialog`、`RecoveryDialog`、`DiagnosticDrawer` | 校验、任务、导出、恢复和诊断。 |
+
+### 变体与状态
+
+- 按钮只有：主操作、次操作、幽灵、危险、图标。
+- 单元状态固定为：未翻译、草稿、已翻译、已审校、受阻；映射固定的图标、文字和颜色。
+- 输入与编辑器状态：默认、聚焦、保存中、错误、只读、禁用；错误必须附带可操作说明。
+- 可能替换文件、放弃恢复内容等操作必须确认；可安全后台运行的进度可收进任务中心。
+
+### 所有权
+
+- `apps/desktop/src/design/tokens.css`：颜色、字号、间距、层级、时长和面板尺寸。
+- `apps/desktop/src/components/ui/`：维护的基础组件，无产品规则。
+- `apps/desktop/src/components/workbench/`：可复用的领域组件和布局约束。
+- 路由页面只组合领域组件，不得私自创建按钮、颜色、阴影或对话框变体。
+
+## 应用框架与布局
+
+标准项目窗口是以翻译为中心的固定现场。长文模式默认只显示章节导航和读写区，辅助面板全部关闭；用户需要时才展开术语、批注、问题或任务。
 
 ```text
 ┌──────────────────────────────────────────────────────────────────────────────────────────────┐
-│ Babel Tower / Project title        Editing · Saved   Undo Redo   Search   Tasks   Export      │
-├──────────────┬──────────────────────┬──────────────────────────────────────┬──────────────────┤
-│ Project rail │ Context pane         │ Primary workspace                    │ Inspector        │
-│              │                      │                                      │                  │
-│ Overview     │ chapters / filters / │ long-form editor OR                  │ current unit,    │
-│ ──────────── │ resources, depending │ structured unit list OR              │ source context,  │
-│ Content      │ on current workspace │ resource canvas                      │ diagnostics      │
-│ Units        │                      │                                      │                  │
-│ Resources    │                      │                                      │                  │
-│ Validate     │                      │                                      │                  │
-│ Exports      │                      │                                      │                  │
-├──────────────┴──────────────────────┴──────────────────────────────────────┴──────────────────┤
-│ Current location · Unit state · Character count · Local task activity                         │
+│ 项目名称⌄   [长文｜单元｜资源]      正在编辑 · 已保存    撤销 重做   搜索   问题 2   导出      │
+├──────────────────────┬───────────────────────────────────────────────────────────────────────┤
+│ 章节 / 筛选 / 资源   │ 翻译现场                                                              │
+│                      │                                                                       │
+│ 随观察方式改变       │ 原文语境                                                              │
+│ 可收起               │ ───────────────────────────────────────────────────────────────────  │
+│                      │ 译文编辑                                                              │
+│                      │                                                                       │
+│                      │                                            [按需打开：术语 / 批注 / 问题]│
+├──────────────────────┴───────────────────────────────────────────────────────────────────────┤
+│ 当前位置 · 单元状态 · 字符数                                               本地任务活动      │
 └──────────────────────────────────────────────────────────────────────────────────────────────┘
 ```
 
-- The title bar is a 48px command band. It never becomes a second navigation rail.
-- The project rail is navigation only. It does not repeat progress dashboards or settings.
-- The context pane belongs to the active workspace and can be collapsed without changing route or selection.
-- The inspector is closed by default below 1440px. It is an inspection surface, not a required second editor.
-- The bottom status strip is 24px and contains non-actionable context; actionable failures open Task Center or Diagnostics.
-- Global commands are ordered by frequency: save state, undo/redo, search, tasks, export. Application settings live in a native menu or compact project/library menu, not in the workbench rail.
+- 顶栏左侧项目名称打开项目菜单；其后立即是三种观察方式，强调用户始终处在同一翻译现场。
+- 默认上下文面板宽 236px，中央读写区占据其余空间。检查器不参与默认布局。
+- 上下文面板跟随观察方式变化，收起不改变路由或选中内容；`专注模式`进一步隐藏上下文面板和底部状态条，只保留读写区与极简保存提示。
+- 术语、历史译文、批注和问题共用一个 320px 辅助面板，由用户显式打开；一次只显示一个标签，关闭后释放全部宽度。
+- 任务中心只在有活动任务、失败任务或用户主动打开时出现；正常保存不产生任务条目。
+- 底部状态条高 24px，只呈现当前位置、状态和字符数；可操作问题进入辅助面板。
 
-## Screen specifications
+## 页面规格
 
-### Project library
+### 项目库
 
-Purpose: begin, resume, locate, and organize local projects without making project administration the product's main experience.
+目的：开始、继续、定位和管理本地项目，但不让项目管理成为产品主体验。
 
-- Header: `Babel Tower`, compact `导入作品` primary button, project search field, overflow menu for settings/about.
-- Main content: full-width project list grouped by `继续工作` and `其他项目`; each row contains project name, source format, last location, modified time, translation progress, and a subtle blocked indicator when applicable.
-- Row primary action: open/resume. Secondary actions live in a `More` menu: reveal folder, duplicate portable backup, rename, remove library reference. Removing a library reference never deletes source/project files in the same action.
-- Empty state: centered but unframed title `导入第一部作品`, one sentence about local projects, one `选择文件` primary command, and supported-format text. No illustration is required before a brand asset exists.
-- Error/absence: a missing project is still listed with `需要定位` and a folder action. It is never silently removed.
+- 顶部：`Babel Tower`、主按钮“导入作品”、项目搜索、设置和关于的更多菜单。
+- 主体：按“继续工作”和“其他项目”分组的全宽项目列表。每个条目包含名称、来源格式、上次位置、修改时间、翻译进度；有问题时显示低调但明确的标记。
+- “继续翻译”是首要操作，直接恢复最近有效位置；项目名称旁的次要入口才进入项目状态页。其他操作放进“更多”：在文件夹中显示、创建便携备份、重命名、从项目库移除。移除引用绝不与删除文件合并成同一动作。
+- 空状态：无边框的“导入第一部作品”、一句本地项目说明、一个“选择文件”主操作和支持格式文字。品牌素材未确定前不画插图。
+- 缺失项目仍显示“需要定位”，不静默移除。
 
-### Import flow
+### 导入作品
 
-Purpose: turn a source file into a local project while making format limitations clear before committing work.
+目的：把来源文件变成项目，在真正开始前说明格式支持情况。
 
-The route uses a three-step stepper within one centered dialog or dedicated narrow page. Back/Cancel remain visible; only an active import task asks for confirmation before leaving.
+使用同一路由内的三步流程；返回和取消始终可见，只有导入进行中离开时需要确认。
 
-1. `选择作品`: file picker plus drop zone; accepted formats visible; duplicate-source detection presents `打开已有项目` and `仍要创建副本`.
-2. `确认项目`: editable project name, source format/encoding summary, source location disclosure, and a concise original-file guarantee.
-3. `检查结果`: extracted chapter/unit/resource counts, supported image count, warnings, and `进入项目` primary action. A blocking safety issue disables entry and exposes `查看问题`.
+1. “选择作品”：文件选择和拖放区域、支持格式；检测到重复来源时提供“打开已有项目”和“仍要创建副本”。
+2. “确认项目”：项目名称、来源格式/编码摘要、来源位置说明，以及“原件保持不变”的承诺。
+3. “检查结果”：章节、单元、资源数量，受支持图片数量和警告；主操作为“进入项目”。安全问题未解决时禁用进入并提供“查看问题”。
 
-Do not expose archive entries, parsing internals, or worker logs in this flow. Technical information is available only through `详细信息` in the result step.
+不在此流程显示压缩包条目、解析过程或后台日志；技术信息只在“详细信息”中按需展开。
 
-### Project overview
+### 项目状态
 
-Purpose: orient a returning user before they resume work, without becoming a dashboard.
+目的：按需查看项目来源、进度、问题和交付记录；不出现在日常进入路径中。
 
-- Top: project name, source format, last saved time, and one primary `继续翻译` action that targets the last valid location.
-- Main left: `下一步` list, limited to at most three high-value actions: resume, resolve highest-priority validation issue, or continue a local task.
-- Main right: compact project facts: translated/reviewed counts, source chapters/resources, recent exports. These are text-led summaries, not charts.
-- Bottom: recent locations as a simple list. The user can enter Content, Units, or Resources directly from the rail.
-- Empty project: explains that extraction found no editable content and offers diagnostics; it does not simulate progress.
+- 入口：项目名称菜单中的“项目状态”，以及项目库条目的次要操作。
+- 顶部：项目名称、来源格式、上次保存时间和“返回翻译”。该按钮前往上次有效位置。
+- 左侧主体：最多三条“下一步”，按价值排序：继续翻译、处理最高优先级校验问题、继续本地任务。
+- 右侧：译完/审校数量、章节/资源数量、最近导出等文字摘要，不画图表。
+- 底部：最近位置列表；选择任一位置直接回翻译现场的相应观察方式。
+- 若提取不到可编辑内容，说明结果并给出诊断入口，不伪造进度。
 
-### Long-form workspace (`Content`)
+### 长文模式
 
-Purpose: support chapter-length reading and writing with an uninterrupted target-text focus.
+目的：提供连续阅读、理解语境和长篇写作的环境。
 
-- Context pane: chapter tree with translated-state dots, chapter title, optional search-within-project result list, and a compact progress summary. It does not display every unit as a second giant list.
-- Canvas header: breadcrumb `Project / Content / Chapter`, chapter title, workspace switcher, reading/editor controls, and inspector toggle.
-- Canvas body: source context appears in a quiet, collapsible column or preceding block; target translation remains the editing surface. The default comparison style is stacked on narrower windows and two-column above the writing-width threshold.
-- Protected inline structure appears as low-emphasis inline chips with a stable label, never as an editable raw markup string. Selecting a chip opens a small explanation/inspector entry.
-- Footer navigation: previous/next chapter, current chapter translation progress, and unit location when the cursor is inside an addressable unit.
-- Text selection/cursor is preserved through save acknowledgement, inspector toggles, and context-pane collapse. A user-initiated workspace switch carries the selected `unit_id` when possible.
+- 上下文面板：章节树、翻译状态点、章节标题、项目内搜索结果和紧凑进度。不得把每个单元再做成一列巨大的列表。
+- 主区头部：`项目 / 长文 / 章节` 面包屑、章节标题、观察方式切换、阅读/编辑控制和辅助面板开关。
+- 主区正文：来源上下文以可收起的安静列或前置段落呈现；译文始终是编辑主区。宽窗口下并列，窄窗口下上下排列。
+- 受保护的内联结构显示为低强调芯片，带稳定标签，不显示为可编辑原始标记。选择芯片可打开简短说明。
+- 底部导航：前后章节、当前章节进度、光标所在单元位置。
+- 保存确认、辅助面板开关和上下文面板收起均不得丢失选区、光标或滚动位置。用户主动切换观察方式时，尽量携带当前 `unit_id`。
+- 当前单元旁提供轻量工具入口：前后文、术语、历史译文、重复句、批注和格式。没有命中内容时不显示空徽章。
+- 来源与译文支持同步高亮搜索；查找替换默认只作用于译文，项目级替换必须先预览所有命中，逐项排除后再执行。
 
-### Structured-unit workspace (`Units`)
+### 单元模式
 
-Purpose: provide fast, strict correspondence work for translators who need to process units systematically.
+目的：支持需要严格映射和快速逐条处理的工作。
 
-- Header: workspace switcher, search, status filter, chapter/collection filter, `仅显示未完成` toggle, and a compact bulk-action menu.
-- Main: virtualized rows with fixed structure: index/status, source text, target editor/summary, and context marker. Source and target columns are resizable but retain a readable minimum.
-- Selected row: uses an information-tinted background, a focus outline, and opens contextual information in the inspector. It is not signaled only by color.
-- Inline edit: starts via Enter/click, commits through the shared save protocol, and keeps the row height stable. Multi-line translation opens a row expansion rather than a free-floating modal.
-- Bulk actions are limited to state changes and must show the number of affected units before confirmation. Text content is never bulk-overwritten.
-- Keyboard: Up/Down changes active row; Enter edits target; Escape exits edit without changing selection; `Ctrl/Cmd+Enter` changes the state according to the chosen explicit command.
+- 头部：工作空间切换、搜索、状态筛选、章节/集合筛选、“仅显示未完成”开关和紧凑批量操作。
+- 主体：虚拟化稳定行，固定结构为序号/状态、来源文字、译文编辑或摘要、上下文标记。源译列允许调整，但有最小可读宽度。
+- 选中行使用信息色、焦点轮廓和辅助面板内容共同提示，不能只靠颜色。
+- 行内编辑通过 Enter 或点击开启，走统一保存协议，行高稳定。多行译文展开当前行，而非弹出漂浮编辑器。
+- 批量操作只允许改状态；确认前显示影响数量，绝不批量覆盖译文。
+- 键盘：上下键改变当前行；Enter 编辑；Escape 退出编辑但不取消选择；`Ctrl/Cmd+Enter` 按明确命令改变状态。
 
-### Resource workspace (`Resources`)
+### 资源模式
 
-Purpose: let a translator inspect image text and create a controlled translated derivative without altering the original.
+目的：查看图片文字、修正识别结果、填写人工译文并生成不修改原图的衍生图。
 
-- Context pane: resource thumbnail list, grouped by source location. Each entry shows region count and unresolved/blocked marker.
-- Canvas toolbar: fit, 100%, zoom out/in, region visibility, reading order, and inspector toggle. Tool buttons are icon buttons with tooltips.
-- Canvas: actual source image on a neutral checker-free canvas; regions use a thin high-contrast outline, numbered reading-order label, and selected-region fill. Handles appear only on the selected region.
-- Inspector: source recognition candidate, editable source transcription, manual translation field, font/size/direction/alignment controls, and derivative preview state. OCR is described as `识别结果`, never `译文`.
-- Primary actions: `保存区域` and `预览嵌字`; creating a derivative is explicit and reports that the original image remains unchanged.
-- No selected region: inspector explains how to choose or add a region; controls requiring selection are disabled with reason text.
+- 上下文面板：按来源位置分组的缩略图列表，每个条目显示区域数量及未处理/受阻标记。
+- 画布工具栏：适应窗口、100%、缩小/放大、区域可见性和辅助面板开关。图标按钮均有悬停提示。
+- 画布：真实原图置于中性背景，区域使用高对比细线、阅读顺序编号与选中填充；控制点只出现在当前区域。
+- 辅助面板：识别结果、可编辑的原文转录、人工译文、预设字体、字号、横排/竖排、基础对齐和衍生图预览。文字识别永远称为“识别结果”，不是“译文”。
+- 主操作：“保存区域”和“预览嵌字”。创建衍生图时明确说明原图不会变。
+- 未选区域时，辅助面板说明如何选择或新建区域；依赖区域的控件禁用并说明原因。
+- 首版不提供自由钢笔、图层、复杂蒙版、透视变换、高级背景重建、任意文字特效或完整图像编辑历史。无法通过基础修补可靠处理的图片标为“需要外部处理”，导出时保留明确映射。
 
-### Validation (`Validate`)
+## 翻译辅助能力
 
-Purpose: give translators a clear pre-delivery list of issues, not a technical log viewer.
+这些能力直接服务“读、理解、写、保持一致”，优先级高于项目统计和高级资源排版。它们只检索、组织和校验用户自己的项目内容，不生成译文。
 
-- Header: summary sentence such as `3 个问题需要处理，2 项提示可稍后查看`, with `重新检查` and a severity filter.
-- List: each item has severity icon/text, human explanation, affected chapter/unit/resource, and one `前往处理` command. Technical details are collapsible.
-- Severity definition: `阻止导出` is reserved for unsafe mapping, encoding, missing required translation, or unrecoverable output conflict; `需要注意` does not block export; `信息` is hidden by default after first review.
-- Resolving an item opens its exact workspace target. Validation route remains in history so Back returns to the filtered issue list.
-- No problems: use concise confirmation and show the last validation timestamp; do not replace the page with celebration art.
+### 语境与对照
 
-### Export and export history (`Exports`)
+- 当前单元始终可以查看前后至少两个单元；长文模式默认自然呈现更多上下文。
+- 来源和译文可以并列或上下对照，切换不改变当前单元和光标位置。
+- 从单元模式跳到长文模式时，当前单元滚入稳定的语境位置，而不是页面顶端。
 
-Purpose: make a new delivery artifact predictable while protecting the original work.
+### 项目内术语与专名
 
-- Default route shows export history: output name/location, format, time, snapshot state, result, and `在文件夹中显示` action.
-- `新建导出` opens a three-part dialog: destination/name, validation summary, and final confirmation. The dialog states `将创建新文件，原件不会被修改`.
-- When validation blocks export, the primary action is `查看问题`; `仍然导出` is never offered for integrity blockers.
-- Export progress can be backgrounded to Task Center. It presents stages in user language: prepare, write translation, check result, finish.
-- Completion shows output path, validation result, and open/reveal actions. Failure retains the last successful export and says whether a partial staging file was cleaned.
+- 首版提供项目级术语表，字段为原文、推荐译法、类别、备注和适用范围。
+- 用户可以从选中文字快速添加术语；术语命中在辅助面板列出，不在正文中强制着色干扰阅读。
+- 译文与推荐译法不一致时给出可忽略的一致性提示，不自动替换。
+- 人名、地名和作品内专名使用同一术语模型，不另造一套系统。
 
-### Tasks, diagnostics, recovery, and global search
+### 历史译文与重复句
 
-- Task Center is a right-side sheet opened from the title bar. It lists active/recent local tasks with stage, progress, retry/cancel when safe, and a link to affected content.
-- Diagnostic Drawer is reached from a task/error or project menu. Its default view is a human-readable summary; a copy/export detail action is explicit and warns that paths may be included.
-- Recovery opens before a project workspace only when a decision is required. It presents the last confirmed save, any recoverable UI draft, and actions `恢复并继续`, `仅打开已保存内容`, and `返回项目库`. None discard content invisibly.
-- Global search opens as a command dialog. Results group by source text, translation, chapter, and resource; selecting one navigates once to the relevant workspace target and closes the dialog.
+- 搜索同项目已有来源和译文，结果显示章节、上下文和单元状态。
+- 导入阶段标记完全重复和高相似来源；编辑时在辅助面板提示已翻译实例。
+- 历史译文只能由用户点击引用或复制，不自动写入当前译文，也不把相似结果称为机器翻译。
+- 同一重复句出现不同译法时进入一致性提示，但允许用户因语境不同保留差异并写备注。
 
-## Core user flows
+### 个人批注与标记
 
-### First import to first translation
+- 批注是首版能力，不再是待定项。批注绑定单元或章节，与译文分开保存，不进入导出文件。
+- 批注支持普通备注、待核实、文化背景、译法选择四种类型；类型用于筛选，不使用复杂看板。
+- 用户可以为单元加星标，并通过“有批注”“待核实”“已标记”快速筛选。
 
-```text
-Project library
-  -> Import / choose source
-  -> Confirm project
-  -> Review extraction result
-  -> Enter project overview
-  -> Continue translation
-  -> Content workspace at first untranslated unit
-  -> Type translation
-  -> Editing -> Saving -> Saved
-```
+### 查找替换、长度与格式
 
-Acceptance: user sees the original-file guarantee before project creation; a successful save does not navigate, scroll, or replace editor state.
+- 全局搜索同时覆盖来源、译文、术语和批注，并清楚区分命中类型。
+- 替换只允许操作译文；章节级和项目级替换必须先生成变更预览，并进入统一撤销组。
+- 显示当前单元与来源的字符数/长度比例，但只在格式敏感或用户打开时突出，不把文学翻译变成长度打分。
+- 受保护格式标记不可直接删除；格式缺失、顺序异常或不兼容时在当前单元附近提示，并进入校验列表。
 
-### Cross-workspace context switch
+### 首版不做的翻译辅助
 
-```text
-Selected unit in Content
-  -> choose Units in workspace switcher
-  -> Units route opens with same unit query
-  -> selected row is scrolled into view and focused only after user input
-  -> choose Resources only when selected unit has a linked region
-  -> Resource workspace selects that region; otherwise explains no linked resource in place
-```
+- 不接入机器翻译、生成式人工智能、在线词典或云端翻译记忆。
+- 不自动改写、润色或评价译文质量。
+- 不建立团队共享术语审批、多人冲突或跨账号记忆库。
 
-Acceptance: no route loop, no synthetic duplicate unit selection, and no loss of unsaved local text. Switching to an unavailable representation is an in-place explanation, not a redirect.
+## 交付与系统页面
 
-### Image text workflow
+### 校验
 
-```text
-Resources
-  -> choose image
-  -> choose/add region
-  -> review recognition result
-  -> correct source text if needed
-  -> type human translation
-  -> choose typography/layout
-  -> preview embedded text
-  -> save region / create derivative
-```
+目的：给出交付前可处理的问题列表，不做技术日志查看器。
 
-Acceptance: OCR never fills the target translation; the original image remains inspectable and unchanged after every action.
+- 头部用一句话总结，例如“3 个问题需要处理，2 项提示可稍后查看”，并提供“重新检查”和严重级别筛选。
+- 列表条目包含严重级别图标和文字、用户语言说明、受影响章节/单元/资源和“前往处理”。技术细节折叠。
+- “阻止导出”只用于不安全映射、编码无法表示、必需译文缺失或无法恢复的输出冲突；“需要注意”不阻止导出；“信息”首次查看后默认折叠。
+- 处理条目后跳转到精确位置；返回回到当前筛选列表。
+- 没有问题时只给出简洁确认和最近校验时间，不使用庆祝插画。
 
-### Validate to export
+### 导出与导出记录
 
-```text
-Validate
-  -> choose blocking issue
-  -> go to exact content location
-  -> resolve and save
-  -> Back to prior validation filter
-  -> recheck
-  -> New export
-  -> destination + confirmation
-  -> backgroundable task
-  -> Export history
-```
+目的：让用户可预测地交付新文件，同时保护原件。
 
-Acceptance: failed validation cannot be bypassed for integrity errors; export completion never sends the user to import or project library.
+- 默认显示导出记录：输出名称/位置、格式、时间、快照状态、结果和“在文件夹中显示”。
+- “新建导出”打开三段对话流程：目标名称和位置、校验摘要、最终确认。明确写出“将创建新文件，原件不会被修改”。
+- 校验阻止时，主操作是“查看问题”；完整性问题绝不提供“仍然导出”。
+- 导出进度可收进任务中心；阶段使用用户语言：准备、写入译文、检查结果、完成。
+- 成功显示输出路径和检查结果；失败说明上次成功导出仍可用，以及临时文件是否清理。
 
-### Failure and recovery
+### 任务、诊断、恢复与全局搜索
+
+- 任务中心从顶栏打开，是右侧面板，显示本地任务、阶段、进度、可用的重试/取消和受影响内容入口。
+- 诊断抽屉由任务/错误或项目菜单进入。默认是用户语言摘要；复制或导出详细内容需明确操作，并提醒其中可能含路径。
+- 只有确实需要决定时才进入恢复页面。显示上次确认保存、可恢复的界面草稿，并提供“恢复并继续”“仅打开已保存内容”“返回项目库”。不静默丢弃内容。
+- 全局搜索是命令对话框，按来源文字、译文、术语、批注、章节和资源分组。选择结果后只导航一次到目标位置并关闭对话框。
+
+## 核心流程
+
+### 从导入到第一段译文
 
 ```text
-Write/edit or task interruption
-  -> persistent error/task state
-  -> user keeps visible typed text where possible
-  -> retry / open details / return to work
-  -> on restart, recovery route only if a decision is necessary
-  -> explicit resume choice
+项目库
+  -> 导入 / 选择来源
+  -> 确认项目
+  -> 查看检查结果
+  -> 长文模式中的首个未翻译单元
+  -> 输入译文
+  -> 正在编辑 -> 正在保存 -> 已保存
 ```
 
-Acceptance: all normal UI language explains the user-visible situation and safe data boundary; raw technical detail is opt-in.
+验收：创建项目前看得到原件保护说明；导入成功直接进入翻译现场；保存成功不会跳转、滚动或替换编辑器状态。
 
-## Command, shortcut, and state policy
+### 在三种工作空间间切换
 
-| Command | Default shortcut | Availability | User-visible result |
-| --- | --- | --- | --- |
-| Global search | `Ctrl/Cmd+K` | all project routes | Opens search dialog; does not steal text input while IME is composing. |
-| Undo / redo | `Ctrl/Cmd+Z` / `Ctrl/Cmd+Shift+Z` | when shared history permits | Updates the same project state in every workspace. |
-| Save | `Ctrl/Cmd+S` | editor focus or project route | Requests save; indicator changes only after authoritative response. |
-| Next / previous unit | `Alt+Down` / `Alt+Up` | Content and Units | Moves selection without changing filters. |
-| Switch workspace | `Alt+1` / `Alt+2` / `Alt+3` | project routes | Content / Units / Resources; preserves compatible selected context. |
-| Toggle inspector | `Alt+I` | workspaces | Opens/closes secondary pane without changing route. |
-| Export | `Ctrl/Cmd+Shift+E` | project routes | Opens export flow; blockers are shown before choosing destination. |
+```text
+长文观察方式选中单元
+  -> 轻点“单元”
+  -> 同一翻译现场切换为列表观察方式
+  -> 对应行滚入可见区，不主动抢走输入焦点
+  -> 仅当单元关联图片区域时，“资源”显示关联标记
+  -> 轻点后切换到图片观察方式并选中该区域；没有关联时原位解释
+```
 
-- Keyboard shortcuts are proposed defaults pending product review and must be remappable or documented in a command menu before release.
-- Commands with a browser/system collision may use native menu equivalents on Windows and Linux; no command is hidden only behind a shortcut.
-- `Ctrl/Cmd+S` during IME composition waits for composition completion and never commits partial composition text.
+验收：顶栏、项目、保存状态和当前对象保持稳定；不循环跳转、不创建重复选中、不丢失未确认的本地输入。
 
-## Design decisions requiring review
+### 图片文字工作流
 
-| Decision | Proposed choice | Why it matters |
+```text
+资源
+  -> 选择图片
+  -> 选择或新建区域
+  -> 查看识别结果
+  -> 必要时修正原文
+  -> 输入人工译文
+  -> 选择排版
+  -> 预览嵌字
+  -> 保存区域 / 创建衍生图
+```
+
+验收：文字识别绝不填充译文；每个动作后原图仍可查看且未改变。
+
+### 校验到导出
+
+```text
+校验
+  -> 选择阻止项
+  -> 前往精确位置
+  -> 处理并保存
+  -> 返回原筛选条件
+  -> 重新检查
+  -> 新建导出
+  -> 选择目标并确认
+  -> 可后台运行的任务
+  -> 导出记录
+```
+
+验收：完整性问题不可绕过；导出完成不把用户送回导入或项目库。
+
+### 失败与恢复
+
+```text
+编辑或任务被中断
+  -> 持久错误或任务状态
+  -> 尽可能保留屏幕上的已输入内容
+  -> 重试 / 查看详情 / 继续工作
+  -> 重启后，仅在需要决定时进入恢复页
+  -> 用户明确选择继续方式
+```
+
+验收：普通界面说明用户可见的问题和安全边界；原始技术细节由用户主动展开。
+
+## 命令、快捷键和状态
+
+| 命令 | 默认快捷键 | 可用位置 | 用户可见结果 |
 | --- | --- | --- |
-| Shell density | 48px top bar + rail/pane workbench | Keeps editing primary but commits to desktop-first layout. |
-| Default editor comparison | Source context plus target-primary stacked/two-column adaptive view | Supports reading while reserving width for CJK writing. |
-| Default theme | Light only in version one | Reduces visual QA surface; dark theme remains an open question. |
-| Navigation | Project rail with five destinations; Import outside project | Avoids route recursion and reduces product-level navigation noise. |
-| Component base | shadcn/ui + Radix + Tailwind + Lucide | Establishes consistent accessibility and interaction vocabulary. |
-| Validation language | Human issue list, technical details collapsed | Keeps translators focused without hiding diagnosability. |
-| OCR interaction | Candidate source only; target always human-entered | Enforces the product's non-AI translation boundary. |
-| Export | Dedicated history route plus modal creation flow | Makes delivery auditable without turning workspaces into wizards. |
+| 全局搜索 | `Ctrl/Cmd+K` | 所有项目页面 | 打开搜索对话框；中文输入法组合输入时不抢焦点。 |
+| 撤销 / 重做 | `Ctrl/Cmd+Z` / `Ctrl/Cmd+Shift+Z` | 有共享历史时 | 改变所有工作空间看到的同一项目状态。 |
+| 保存 | `Ctrl/Cmd+S` | 编辑器或项目页面 | 请求保存；只有权威确认后状态才变为“已保存”。 |
+| 下一/上一单元 | `Alt+Down` / `Alt+Up` | 长文和单元模式 | 移动选择，不改变筛选。 |
+| 切换观察方式 | `Alt+1` / `Alt+2` / `Alt+3` | 翻译现场 | 长文 / 单元 / 资源，保留当前对象与兼容上下文。 |
+| 开关辅助面板 | `Alt+I` | 翻译现场 | 打开或关闭术语、批注、历史译文或问题，不改变路由。 |
+| 导出 | `Ctrl/Cmd+Shift+E` | 项目页面 | 打开导出流程，先展示阻止项。 |
 
-## Product review checklist
+- 快捷键为待审查默认值，发布前必须在命令菜单中可发现，并允许必要的系统平台兼容调整。
+- 若与系统冲突，可用 Windows/Linux 原生菜单提供等价入口；不允许命令只藏在快捷键里。
+- 中文输入法组合输入期间按 `Ctrl/Cmd+S`，必须等待组合完成，不能提交半个字。
 
-The product owner should review this checklist before UI implementation. Mark each item approved, revise the linked design section when needed, and leave unresolved items in `Open questions`.
+## 可访问性
 
-### Product fit
+- 目标：界面控件和阅读表面满足 WCAG 2.2 AA。
+- 键盘与焦点：每个命令有可见焦点；对话框锁定焦点并在关闭后还给触发控件；Tab 顺序可预测；列表/表格只在自身获取焦点时使用方向键。
+- 对比与可读性：普通文字和控件满足 AA；不把低对比占位文字当内容；限制行宽，并允许独立增大阅读字号。
+- 屏幕阅读器：提供导航、主区和辅助面板地标；列表和表格语义与操作模型一致；纯图标控件有名称和提示；保存失败与任务完成以适度实时区域通知，不播报每次输入。
+- 感官与动效：没有自动播放媒体；减少动效时移除滑动效果；警告不闪烁。
 
-- [ ] The first screen, project library, and import flow match the intended audience of individual translators rather than a generic SaaS audience.
-- [ ] The product visibly prioritizes human translation and does not imply machine translation, chat assistance, or cloud dependency.
-- [ ] TXT, Markdown, EPUB, and image text workflows have the right prominence for the first release.
-- [ ] The design does not accidentally promise game-resource, audio, video, collaboration, or arbitrary-format support.
+## 窗口适配
 
-### Navigation and routing
+- 支持 Windows 与 Arch Linux 桌面窗口，最低宽度 1024px；主要验收尺寸为 1280x800、1440x900、1920x1080。
+- 宽度大于等于 1440px：默认显示上下文和翻译主区；用户主动打开时再加入辅助面板。
+- 1024-1439px：上下文和辅助面板一次只显示一个，通过带提示的图标开关。
+- 小于 1024px：上下文改为侧滑层；长文编辑器保持主区；校验和导出使用全高对话框或独立页面。
+- 表格保持稳定行高，必要时横向滚动；不得把文字压缩成不可读碎片。
+- 鼠标和键盘优先。悬停显示的次要行操作必须同时进入溢出菜单，且可键盘访问。
 
-- [ ] The five in-project destinations (`内容`, `单元`, `资源`, `校验`, `导出`) are the correct top-level mental model.
-- [ ] Import belongs outside the project rail and project overview is sufficient as the return/orientation point.
-- [ ] Cross-workspace switching should preserve selected context exactly as specified, including the unavailable-target behavior.
-- [ ] Recovery, missing project, import cancel, validation resolution, and export completion have acceptable non-cyclic routes.
-- [ ] No additional primary page is needed before implementation.
+## 加载、空状态、错误和离线
 
-### Workspace usability
+- 加载：立刻绘制工作台框架，骨架屏保持最终布局；章节加载时不得伪装成空编辑器。
+- 空状态：项目库只提供导入入口；提取不到内容时展示结果与诊断；筛选无结果时保留筛选条件，并提供一个“重置筛选”。
+- 错误：错误紧邻受阻操作；同时进入任务中心或诊断抽屉，提供重试或前往位置。普通界面不显示堆栈。
+- 成功：稳定状态文字和低优先级提示即可；常规保存和导出不用庆祝动效。
+- 禁用：对阻止导出、不可撤销、未选区域等情况，必须说明原因。
+- 离线：产品默认离线，不因没有网络显示警告或加载动画；只展示本地文件、识别、索引、导入、导出和磁盘空间状态。
+- 保存：输入是局部界面状态；只有权威确认后显示“已保存”。失败时保留输入，提供重试，不让编辑器看起来已经完成。
 
-- [ ] Long-form mode gives sufficient space and reading comfort for extended CJK writing.
-- [ ] Structured-unit mode has the right source/target density, bulk-state scope, and keyboard model.
-- [ ] Resource mode gives enough control over OCR review, typography, layout, and derivative preview without exposing technical internals.
-- [ ] Validation severity and export blocking rules match the desired delivery standard.
-- [ ] The proposed save, task, failure, and recovery language feels trustworthy and understandable.
+## 文案规范
 
-### Visual system
+- 语气：简洁、沉稳、实用，默认不使用技术语言。
+- 使用：项目、原件、译文、单元、资源、校验、导出、任务、问题。
+- 避免：在常规界面出现后台进程、解析器、进程间通信、运行时或数据库日志。使用“文字识别”“内容处理”“检查”“详细信息”等用户语言。
+- 文案顺序：先说用户结果，例如“无法导出此章节”；再说明安全边界，例如“原件和已保存译文未改变”；最后给一个下一步，例如“查看问题”“重试”“选择其他位置”“返回项目”。
+- 不使用人工智能式邀请、感叹号、空泛称赞或术语堆砌。
 
-- [ ] The calm editorial/workbench tone is appropriate for Babel Tower.
-- [ ] The proposed light palette, serif reading face, compact UI typography, spacing, and 6px radius are acceptable.
-- [ ] The product should use this unified component foundation: shadcn/ui, Radix UI, Tailwind CSS, and Lucide.
-- [ ] The stated anti-patterns are correct: no oversized cards, decorative gradients, AI aesthetics, terminal styling, or generic dashboard visuals.
-- [ ] A version-one light-only theme is acceptable, or dark theme scope should be decided now.
+## 实现与质量约束
 
-### Delivery quality
+- 前端：Tauri 2 内的 React 19、TypeScript、Vite；统一使用 `shadcn/ui`、Radix UI、Tailwind CSS、Lucide 和 CSS 变量。
+- 脚手架与工具链的固定决策见 [脚手架与工具链](/home/jiahui/project/Babel_Tower/TOOLCHAIN.md)；页面实现不得绕过该目录边界另起框架、路由器或状态管理方案。
+- 设计变量：颜色、间距、圆角、字体、层级、动效时长和面板尺寸必须来自变量；业务代码不得新增随意颜色、阴影或组件变体。
+- 性能：不得一次渲染全部单元或整本书；单元列表虚拟化，长文按章节窗口化；保存不得让编辑器重挂载、跳滚动、丢选区或触发布局位移；画布只重绘可见区域，缩略图延迟加载。
+- 兼容：完全离线、中文输入法、Windows/Arch 桌面；不依赖远程字体、图标、素材、统计或人工智能服务。
+- 验证：每个领域组件状态需要 Storybook 或等价隔离预览；Playwright 桌面冒烟覆盖全部路由、守卫、中文输入法、键盘操作、保存/恢复、导出/校验；在 1280x800 和 1440x900 保存项目库、三种工作空间、校验、导出、空、加载、错误状态截图。
+- 截图审查必须检查：重叠、截断、焦点可见性、工具栏宽度跳动和意外的通用后台视觉。
+- 第二版设计通过后，必须先同步更新产品需求与架构数据模型：新增术语、批注、标记、重复来源关系和项目级替换命令；在同步完成前不得直接实现这些界面。
 
-- [ ] WCAG 2.2 AA, keyboard navigation, focus behavior, CJK IME, and reduced-motion behavior are release requirements.
-- [ ] The target desktop widths and pane-collapse behavior are acceptable.
-- [ ] Visual baseline screenshots and route/IME/interaction smoke tests are required before each significant UI merge.
-- [ ] The listed open questions have owners before the affected implementation phase begins.
+## 待审查决策
 
-## Review outcome
+| 决策 | 当前选择 | 影响 |
+| --- | --- | --- |
+| 产品定义 | 以长篇人工翻译为核心、兼容结构化资源的个人离线翻译工作台 | 翻译能力优先于通用格式覆盖和项目管理。 |
+| 工作台密度 | 48px 顶栏、236px 可收起上下文、主读写区；辅助面板默认关闭 | 保留专业能力，但让默认现场接近阅读与写作。 |
+| 默认对照方式 | 来源上下文加译文主区，随宽度并列或上下排列 | 兼顾语境与中日韩写作宽度。 |
+| 默认主题 | 首版只有浅色 | 缩小视觉验证范围；深色主题待定。 |
+| 导航 | 翻译是唯一一级现场；长文/单元/资源是观察方式；问题与导出按需出现 | 建立正确产品权重并减少模式切换感。 |
+| 项目进入 | 正常情况直接回上次翻译位置；项目状态页按需访问 | 去掉长期使用中的中间点击。 |
+| 翻译辅助 | 术语、历史译文、重复句、批注、查找替换和格式提示进入首版 | 从“管理翻译”转向“帮助完成翻译”。 |
+| 资源范围 | 只做识别修正、人工译文和基础嵌字；高级图片编辑延后 | 控制首版范围，保持资源为辅助模式。 |
+| 组件基础 | `shadcn/ui`、Radix UI、Tailwind CSS、Lucide | 统一无障碍和交互词汇。 |
+| 校验表达 | 用户问题列表，技术细节折叠 | 让译者保持专注，同时保留可诊断性。 |
+| 文字识别 | 只提供原文候选，译文必须人工填写 | 坚守不自动翻译边界。 |
+| 导出 | 独立记录页加对话式创建流程 | 让交付可追溯，不把工作区做成向导。 |
 
-- Decision status: pending product-owner review.
-- Approval condition: all non-open checklist items are accepted or revised; any rejected decision is changed here before implementation.
-- Next implementation artifact after approval: route map, token stylesheet, component inventory, and Storybook/Playwright baseline plan derived directly from this document.
+## 待定问题
+
+- [ ] 徽标、应用图标和最终名称呈现方式 / 产品负责人 / 影响安装包、标题栏和项目库。
+- [ ] 默认中文衬线字体的授权和包体积 / 工程与产品负责人 / 影响离线安装包大小和阅读质量。
+- [ ] 首版是否需要紧凑深色主题 / 产品负责人 / 影响设计变量完整度和视觉测试范围。
+- [ ] 最终快捷键映射 / 产品负责人和体验设计 / 影响命令菜单与无障碍验证。
+- [ ] 哪些 EPUB 结构问题应从详细信息提升为阻止导出 / 格式工程 / 影响校验层级。
+
+## 第一轮审查修订记录
+
+| 审查意见 | 第二版处理 |
+| --- | --- |
+| 五个一级目的地权重错误 | 改为一个翻译现场；三种观察方式轻量切换；问题和导出按需出现。 |
+| 默认多面板过重 | 删除常驻项目侧栏与检查器；默认只保留上下文和主读写区；新增专注模式。 |
+| 项目总览增加摩擦 | 正常打开直接恢复翻译；项目状态页改为按需入口。 |
+| 资源模式范围过大 | 明确基础图片文字辅助范围，排除完整图像编辑能力。 |
+| 翻译本身能力不足 | 加入语境、术语、项目历史译文、重复句、批注、查找替换、长度与格式提示。 |
+| 系统管理感过强 | 保存、任务、诊断和恢复默认退到幕后，只在需要决定时占据前景。 |
+| 产品方向需二选一 | 明确选择“个人翻译工作台”，结构化本地化资源作为兼容能力。 |
+
+## 产品审查清单
+
+第一轮已经明确通过的原则标为完成；未勾选项是第二版新增或仍需定稿审查的决策。接受或修改后应回写本文件。
+
+### 产品匹配
+
+- [x] 项目库和导入流程面向个人译者，而不是通用软件即服务用户。
+- [x] 界面清楚地优先人工翻译，不暗示机器翻译、聊天帮助或云端依赖。
+- [ ] 同意“长篇人工翻译为核心，结构化内容和图片为兼容能力”的最终产品定义。
+- [ ] 文本、电子书和精简后的图片文字在首版中的优先级正确。
+- [x] 设计没有暗示首版已支持游戏资源、音频、视频、协作或任意格式。
+
+### 导航与路由
+
+- [ ] 同意取消五个并列目的地，以翻译为唯一一级现场。
+- [ ] 同意正常打开项目直接恢复翻译，项目状态页不再是必经页面。
+- [x] 三种观察方式切换时必须保留同一对象和上下文。
+- [x] 恢复、项目缺失、导入取消、校验跳转和导出完成均不得造成循环路由。
+- [ ] 同意校验从“问题”入口进入、导出从顶栏命令进入，不再常驻侧栏。
+
+### 工作空间体验
+
+- [ ] 长文模式有足够的中日韩阅读和写作空间。
+- [ ] 单元模式的源译密度、批量状态范围和键盘操作合理。
+- [ ] 精简后的资源模式边界正确：识别修正、人工译文、基础排版和预览。
+- [ ] 术语、历史译文、重复句、批注、查找替换和格式提示应进入首版。
+- [x] 校验严重级别和精确定位处理方式符合产品方向。
+- [x] 保存、恢复透明，任务和诊断默认退到幕后。
+
+### 视觉与组件体系
+
+- [x] 安静、文学感、专业工作台的气质适合 Babel Tower。
+- [ ] 当前浅色、衬线阅读字体、紧凑界面字体、间距与 6px 圆角可以接受。
+- [ ] 同意使用 `shadcn/ui`、Radix UI、Tailwind CSS 和 Lucide 作为统一组件基础。
+- [ ] 同意禁止巨型卡片、装饰渐变、人工智能美学、终端风格和通用后台界面。
+- [ ] 决定首版仅浅色，或现在扩大为深色主题范围。
+
+### 交付质量
+
+- [ ] WCAG 2.2 AA、键盘导航、焦点、中文输入法和减少动效是发布要求。
+- [ ] 目标窗口尺寸与面板收起行为可以接受。
+- [ ] 每次重要界面合并前必须有截图基线和路由/输入法/交互冒烟测试。
+- [ ] 所有待定问题在对应开发阶段开始前都有负责人。
+
+## 审查结论
+
+- 当前结论：第一轮产品审查已吸收；第二版等待定稿审查。
+- 已确认：离线优先、人工翻译优先、同一对象的三种观察方式、原件不修改、保存/恢复透明、校验精确定位、弱化项目管理、使用用户语言。
+- 通过条件：第二版未勾选项被接受或修改；所有被否决的决策都在实现前更新到本文件。
+- 审查通过后的第一步：同步产品需求、数据模型和测试规格，再拆出路由图、设计变量样式表、组件清单，以及 Storybook/Playwright 基线计划。

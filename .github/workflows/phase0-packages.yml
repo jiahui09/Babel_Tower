@@ -1,0 +1,45 @@
+name: phase3-packages
+
+on:
+  workflow_dispatch:
+  pull_request:
+    paths:
+      - 'crates/**'
+      - 'tools/phase0-runner/**'
+      - 'tools/phase3-runner/**'
+      - 'tools/txt-worker/**'
+      - 'packaging/**'
+      - '.github/workflows/phase0-packages.yml'
+
+jobs:
+  arch-offline:
+    runs-on: ubuntu-24.04
+    steps:
+      - uses: actions/checkout@v4
+      - run: docker pull archlinux:base-devel archlinux:base
+      - run: ./packaging/build-arch-ci.sh
+      - uses: actions/upload-artifact@v4
+        with:
+          name: babel-tower-phase3-txt-arch
+          path: release/arch/*.pkg.tar.zst
+
+  windows-cross-build:
+    runs-on: ubuntu-24.04
+    steps:
+      - uses: actions/checkout@v4
+      - uses: dtolnay/rust-toolchain@stable
+      - name: Install cross-build tools
+        run: |
+          sudo apt-get update
+          sudo apt-get install --yes nsis
+          cargo install cargo-xwin --locked
+      - name: Build Windows package without native validation
+        env:
+          XWIN_ACCEPT_LICENSE: '1'
+        run: ./packaging/build-windows-phase0.sh
+      - uses: actions/upload-artifact@v4
+        with:
+          name: babel-tower-phase3-txt-windows-built-unverified
+          path: |
+            release/windows/*.exe
+            release/windows/release-manifest.json

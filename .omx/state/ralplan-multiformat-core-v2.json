@@ -1,0 +1,53 @@
+{
+  "workflow": "ralplan",
+  "name": "multiformat-core-v2",
+  "complete": true,
+  "date": "2026-08-17",
+  "planning_artifacts": [
+    ".omx/context/multiformat-high-performance-core-20260817T071429Z.md",
+    ".omx/plans/prd-multiformat-core-v2.md",
+    ".omx/plans/architecture-multiformat-core-v2.md",
+    ".omx/plans/test-spec-multiformat-core-v2.md"
+  ],
+  "reviews": [
+    {
+      "role": "architect",
+      "iteration": 1,
+      "verdict": "ITERATE",
+      "artifact": ".omx/plans/reviews/architect-multiformat-core-v2-iteration-1.md"
+    },
+    {
+      "role": "architect",
+      "iteration": 2,
+      "verdict": "APPROVE",
+      "artifact": ".omx/plans/reviews/architect-multiformat-core-v2-iteration-2.md"
+    },
+    {
+      "role": "critic",
+      "iteration": 1,
+      "verdict": "ITERATE",
+      "artifact": ".omx/plans/reviews/critic-multiformat-core-v2-iteration-1.md"
+    },
+    {
+      "role": "critic",
+      "iteration": 2,
+      "verdict": "ITERATE",
+      "artifact": ".omx/plans/reviews/critic-multiformat-core-v2-iteration-2.md"
+    },
+    {
+      "role": "critic",
+      "iteration": 3,
+      "verdict": "APPROVE",
+      "artifact": ".omx/plans/reviews/critic-multiformat-core-v2-iteration-3.md"
+    }
+  ],
+  "review_order": [
+    "architect-1",
+    "architect-2",
+    "critic-1",
+    "critic-2",
+    "critic-3"
+  ],
+  "next_phase": "Phase 0 architecture fitness prototypes",
+  "implementation_started": false
+}

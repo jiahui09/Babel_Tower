@@ -1,0 +1,18 @@
+{
+  "verdict": "SUPPORTED",
+  "input_bytes": 10000000,
+  "units": 100000,
+  "import_ms": 5198,
+  "cold_open_ms": 0,
+  "peak_rss_mib": 92.703125,
+  "page_p95_ms": 0.29,
+  "save_p95_ms": 2.521,
+  "search_p95_ms": 31.615,
+  "thresholds": {
+    "cold_open_ms": 3000,
+    "peak_rss_mib": 400.0,
+    "page_p95_ms": 50.0,
+    "save_p95_ms": 300.0,
+    "search_p95_ms": 150.0
+  }
+}

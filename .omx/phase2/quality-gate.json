@@ -1,0 +1,46 @@
+{
+  "schema_version": 1,
+  "phase": "G2-adapter-contract",
+  "date": "2026-08-17",
+  "verdict": "SUPPORTED",
+  "claims": {
+    "streaming_mock_import": true,
+    "resumable_generation_batches": true,
+    "validated_generation_activation": true,
+    "reextraction_binding": true,
+    "resumable_frozen_export": true,
+    "production_format_support": false,
+    "production_bundle_complete": false,
+    "windows_native_verified": false
+  },
+  "verification": {
+    "workspace_tests": 81,
+    "format_check": "PASS",
+    "clippy_deny_warnings": "PASS",
+    "architecture_dependency_check": "PASS",
+    "diff_check": "PASS",
+    "code_review": "APPROVE"
+  },
+  "architecture_blockers_closed": [
+    "binding decisions validate canonical candidate membership in authoritative storage",
+    "only sealed Validated generations can become Active",
+    "adapter deadlines use a live monotonic clock",
+    "materialization enforces cumulative output budgets",
+    "image regions require exactly one image owner"
+  ],
+  "package_closure": {
+    "phase0_probe": "SUPPORTED",
+    "arch": "SUPPORTED",
+    "windows": "BUILT_UNVERIFIED",
+    "production_bundle": "FALSIFIED"
+  },
+  "optimization_scope": {
+    "performed": "replace per-page full-overlay scans with frozen per-unit hashes",
+    "deferred": [
+      "zero-copy IPC",
+      "custom allocator",
+      "parallel SQLite writers",
+      "format-specific fast paths"
+    ]
+  }
+}

@@ -1,0 +1,20 @@
+{
+  "verdict": "FALSIFIED",
+  "input_bytes": 104857600,
+  "units": 250000,
+  "image_references": 2000,
+  "import_ms": 39134,
+  "cold_open_ms": 15,
+  "peak_rss_mib": 361.01953125,
+  "page_p95_ms": 0.378,
+  "save_p95_ms": 5.967,
+  "search_p95_ms": 126.335,
+  "thresholds": {
+    "full_import_ms": 20000,
+    "cold_open_ms": 3000,
+    "idle_rss_mib": 400.0,
+    "page_p95_ms": 50.0,
+    "save_p95_ms": 300.0,
+    "search_p95_ms": 150.0
+  }
+}

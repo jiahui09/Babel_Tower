@@ -1,0 +1,88 @@
+{
+  "phase": "G1-kernel-truth-safety",
+  "status": "passed",
+  "aiSlopCleaner": {
+    "status": "passed",
+    "evidence": "移除未使用依赖和重复 draft 查询，收紧锁错误、时钟错误、订阅背压与对象媒体类型边界；未引入新功能层。"
+  },
+  "verification": {
+    "status": "passed",
+    "commands": [
+      "cargo fmt --all -- --check",
+      "cargo clippy --workspace --all-targets -- -D warnings",
+      "cargo test --workspace",
+      "./tools/check-architecture.sh",
+      "cargo run -p babel-phase0 -- recovery"
+    ],
+    "evidence": "58 tests passed; Clippy and format checks passed; architecture dependency direction passed; six-process export recovery probe returned SUPPORTED."
+  },
+  "codeReview": {
+    "recommendation": "APPROVE",
+    "architectStatus": "CLEAR",
+    "evidence": "修复导出覆盖与路径信任、Windows 目录打开、备份 pin/snapshot 竞态和 schema 外建表后完成独立复审。",
+    "independentReview": {
+      "codeReviewer": {
+        "agentRole": "code-reviewer",
+        "evidence": "phase1_code_final: APPROVE; fresh fmt/check/clippy/test/architecture gates passed."
+      },
+      "architect": {
+        "agentRole": "architect",
+        "evidence": "phase1_arch_final: CLEAR; atomic backup root capture, pinned snapshot, schema v5 and no-clobber export boundaries verified."
+      }
+    }
+  },
+  "architectureInvariantGate": {
+    "status": "passed",
+    "sourceArtifacts": [
+      ".omx/plans/prd-multiformat-core-v2.md",
+      ".omx/plans/architecture-multiformat-core-v2.md",
+      ".omx/plans/test-spec-multiformat-core-v2.md",
+      "PHASE1.md"
+    ],
+    "invariants": [
+      {
+        "invariant": "项目真相只由单 writer 的权威事务改变，查询投影不能写库。",
+        "status": "proved",
+        "implementationEvidence": "babel-application Kernel project lock/writer queues and babel-storage ProjectQuery query_only connection.",
+        "testEvidence": "single-writer, concurrent idempotency and query-only tests passed.",
+        "reviewEvidence": "code-reviewer APPROVE; architect CLEAR."
+      },
+      {
+        "invariant": "译文修订追加、命令幂等、撤销恢复不静默覆盖当前头。",
+        "status": "proved",
+        "implementationEvidence": "translation_revision, command_receipt and expected_head_revision_id guarded restore.",
+        "testEvidence": "transaction crash, replay and stale-head tests passed.",
+        "reviewEvidence": "code-reviewer APPROVE; architect CLEAR."
+      },
+      {
+        "invariant": "源对象不可变且先发布后引用，原始输入不被修改。",
+        "status": "proved",
+        "implementationEvidence": "SHA-256 CAS publication precedes object_reference transaction.",
+        "testEvidence": "object crash boundaries, corruption rejection and original-path preservation passed.",
+        "reviewEvidence": "code-reviewer APPROVE; architect CLEAR."
+      },
+      {
+        "invariant": "迁移和备份失败关闭；GC 不得删除活动快照对象。",
+        "status": "proved",
+        "implementationEvidence": "pre-migration verified backup; atomic backup lease/root capture followed by same-sequence read snapshot; GC root recheck.",
+        "testEvidence": "migration missing-object block, backup target no-overwrite and active-pin GC tests passed.",
+        "reviewEvidence": "code-reviewer APPROVE; architect CLEAR."
+      },
+      {
+        "invariant": "导出恢复不信任数据库路径且绝不覆盖已有交付物。",
+        "status": "proved",
+        "implementationEvidence": "schema v5 stores no paths; paths derive from root/export_id; no-clobber publication.",
+        "testEvidence": "existing target, duplicate export, no path columns and six crash-point recovery probe passed.",
+        "reviewEvidence": "code-reviewer APPROVE; architect CLEAR."
+      },
+      {
+        "invariant": "任务恢复、提交订阅和 DAG/IPC 边界有界且可判定。",
+        "status": "proved",
+        "implementationEvidence": "explicit task state machine, bounded lag-aware subscriptions, fenced DAG and versioned capability IPC.",
+        "testEvidence": "task interruption, subscription lag, DAG fencing/cycle and IPC handshake/frame tests passed.",
+        "reviewEvidence": "code-reviewer APPROVE; architect CLEAR."
+      }
+    ]
+  },
+  "knownGap": "Windows target was not validated on hardware. Linux MSVC cross-check stopped at the absent MSVC lib.exe required by bundled SQLite; this is recorded as unverified, not passed."
+}

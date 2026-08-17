@@ -1,0 +1,38 @@
+{
+  "verdict": "FALSIFIED",
+  "scope": "phase3-txt-vertical-slice",
+  "production_bundle_verdict": "FALSIFIED",
+  "production_bundle_reasons": [
+    "Phase 3 TXT slice packages do not contain the production desktop shell",
+    "Markdown, EPUB, OCR, and resource-image workers are not bundled",
+    "OCR runtime and model are not bundled",
+    "native Windows offline installation has not been validated"
+  ],
+  "release_dir": "release",
+  "platforms": [
+    {
+      "platform": "linux-arch-x86_64",
+      "verdict": "FALSIFIED",
+      "artifact": "release/arch/babel-tower-phase3-txt-0.1.0-1-x86_64.pkg.tar.zst",
+      "artifact_hash_valid": true,
+      "unknown_dependencies": [],
+      "missing_components": [],
+      "clean_image_verified": false,
+      "reasons": [
+        "clean-image offline install/launch/probe evidence is incomplete"
+      ]
+    },
+    {
+      "platform": "windows-x86_64",
+      "verdict": "FALSIFIED",
+      "artifact": null,
+      "artifact_hash_valid": false,
+      "unknown_dependencies": [],
+      "missing_components": [],
+      "clean_image_verified": false,
+      "reasons": [
+        "release manifest or packaged artifact is missing"
+      ]
+    }
+  ]
+}

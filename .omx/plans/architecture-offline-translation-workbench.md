@@ -57,8 +57,11 @@ Tauri 路线把长期价值最高的文件、事务、格式和任务能力放�
 | 桌面壳 | Tauri 2.11.x | 窗口、菜单、能力白名单、IPC、sidecar、更新前置能力 |
 | 核心服务 | 独立 Rust stable 进程 | 领域、存储、任务、文件系统、导出、安全校验；与桌面壳使用类型化本地 IPC |
 | 前端 | TypeScript + React 19 + Vite | 工作空间、交互、瞬时视图状态；不直接访问 SQLite/源文件 |
+| 路由 | TanStack Router 文件路由 + hash history | 类型化项目/单元/资源参数与查询参数；桌面端不依赖服务器 URL 回退 |
+| 前端状态 | TanStack Query + Zustand | 核心查询缓存与非权威界面状态严格分离；均不保存权威译文 |
+| 组件与样式 | shadcn/ui + Radix UI + Tailwind CSS + Lucide | 统一基础组件、焦点、语义变量、密度和图标；业务页面不得自建第二套组件体系 |
 | 长文编辑 | Tiptap 3 / ProseMirror | 章节组合视图与语义节点；变更转换为内容单元命令 |
-| 结构化编辑 | React + TanStack Virtual（或等价） | 10 万单元虚拟化；字段编辑不复制权威文档 |
+| 结构化编辑 | React + TanStack Virtual | 10 万单元虚拟化；字段编辑不复制权威文档 |
 | 资源画布 | Canvas 2D 封装 | 图片缩放、区域、选框、文本排版预览；原图只读 |
 | 存储 | SQLite bundled + rusqlite 0.40.x | 单项目单库、WAL、FTS5、迁移、Backup API |
 | 对象库 | SHA-256 内容寻址文件 | 原件、未修改资源、模型清单、衍生图；数据库存引用和哈希 |
@@ -69,7 +72,7 @@ Tauri 路线把长期价值最高的文件、事务、格式和任务能力放�
 | EPUB | zip + quick-xml event offsets | 容器、OPF、XHTML 混合内容、引用图；未修改 payload 复用 |
 | 包管理/构建 | Cargo workspace + pnpm | 锁文件、可重复构建、许可证/供应链扫描 |
 
-版本号是 2026-08 的规划基线。初始化仓库时锁定当日稳定补丁版，并用锁文件、审计和黄金样本确认，不自动漂移大版本。
+版本号是 2026-08 的规划基线。初始化仓库时锁定当日稳定补丁版，并用锁文件、审计和黄金样本确认，不自动漂移大版本。具体脚手架、目录、命令与第一纵向切片以根目录 `TOOLCHAIN.md` 为实施合同。
 
 ## 4. 总体边界与数据流
 

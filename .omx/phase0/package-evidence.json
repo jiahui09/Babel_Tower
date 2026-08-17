@@ -1,0 +1,46 @@
+{
+  "schema_version": 1,
+  "scope": "phase0-architecture-probe",
+  "arch": {
+    "verdict": "SUPPORTED",
+    "artifact": "release/arch/babel-tower-phase0-0.1.0-1-x86_64.pkg.tar.zst",
+    "sha256": "dd9f769d23be7ba05ca91f480f62c228c4b588417565846db912acf856eca58c",
+    "clean_image": "archlinux:base",
+    "network_mode": "none",
+    "installed": true,
+    "launched": true,
+    "declared_dependencies": [
+      "glibc",
+      "gcc-libs"
+    ],
+    "observed_dynamic_dependencies": [
+      "libgcc_s.so.1",
+      "libm.so.6",
+      "libc.so.6"
+    ]
+  },
+  "windows": {
+    "artifact_verdict": "BUILT_UNVERIFIED",
+    "real_os_verdict": "NOT_RUN",
+    "artifact": "release/windows/babel-tower-phase0-windows-x64.exe",
+    "sha256": "07b6772c7a95333e9b733c2756133a24acc106a5ad59e5c07d326c1faf59ef1e",
+    "installer": "NSIS 3.12",
+    "target": "x86_64-pc-windows-msvc",
+    "crt": "static",
+    "observed_dynamic_dependencies": [
+      "bcryptprimitives.dll",
+      "advapi32.dll",
+      "KERNEL32.dll",
+      "ntdll.dll",
+      "api-ms-win-core-synch-l1-2-0.dll"
+    ],
+    "linux_scope": "cross-build-and-publish-only",
+    "installation_tested": false,
+    "launch_tested": false,
+    "blocker": "Windows installation and offline runtime validation require a native Windows runner."
+  },
+  "production_bundle": {
+    "verdict": "FALSIFIED",
+    "reason": "The Phase 0 probe intentionally does not contain the final desktop shell, production format workers, OCR runtime, OCR model, licenses, and full SBOM closure."
+  }
+}
