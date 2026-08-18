@@ -1,0 +1,17 @@
+{
+  "name": "babel-tower",
+  "private": true,
+  "packageManager": "pnpm@11.22.0",
+  "engines": {
+    "node": ">=22.12.0 <23"
+  },
+  "scripts": {
+    "dev": "pnpm --filter @babel-tower/desktop tauri dev",
+    "dev:web": "pnpm --filter @babel-tower/desktop dev",
+    "check": "pnpm --filter @babel-tower/desktop check",
+    "test": "pnpm --filter @babel-tower/desktop test",
+    "test:e2e": "pnpm --filter @babel-tower/desktop test:e2e",
+    "build": "pnpm --filter @babel-tower/desktop build",
+    "rust:check": "cargo fmt --all -- --check && cargo clippy --workspace --all-targets -- -D warnings && cargo test --workspace"
+  }
+}

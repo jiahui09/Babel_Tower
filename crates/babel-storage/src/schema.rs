@@ -1,6 +1,6 @@
 use rusqlite::{Connection, OptionalExtension, TransactionBehavior};
 
-pub const CURRENT_SCHEMA_VERSION: i64 = 8;
+pub const CURRENT_SCHEMA_VERSION: i64 = 9;
 
 pub fn migrate(connection: &mut Connection) -> rusqlite::Result<()> {
     migrate_to(connection, CURRENT_SCHEMA_VERSION)
@@ -23,6 +23,7 @@ pub(crate) fn migrate_to(connection: &mut Connection, target_version: i64) -> ru
             6 => migration_6(&transaction)?,
             7 => migration_7(&transaction)?,
             8 => migration_8(&transaction)?,
+            9 => migration_9(&transaction)?,
             _ => unreachable!(),
         }
         transaction.pragma_update(None, "user_version", target)?;
@@ -333,6 +334,29 @@ fn migration_8(connection: &Connection) -> rusqlite::Result<()> {
     )
 }
 
+fn migration_9(connection: &Connection) -> rusqlite::Result<()> {
+    connection.execute_batch(
+        "CREATE TABLE project_navigation (
+            singleton INTEGER PRIMARY KEY CHECK(singleton = 1),
+            schema_version INTEGER NOT NULL CHECK(schema_version > 0),
+            project_id BLOB NOT NULL CHECK(length(project_id) = 16),
+            view TEXT NOT NULL CHECK(view IN ('LongForm', 'Units', 'Resources')),
+            unit_id BLOB CHECK(unit_id IS NULL OR length(unit_id) = 16),
+            resource_id BLOB CHECK(resource_id IS NULL OR length(resource_id) = 16),
+            region_id BLOB CHECK(region_id IS NULL OR length(region_id) = 16),
+            scroll_anchor_unit_id BLOB
+                CHECK(scroll_anchor_unit_id IS NULL OR length(scroll_anchor_unit_id) = 16),
+            scroll_offset_px INTEGER NOT NULL,
+            zoom_millionths INTEGER NOT NULL
+                CHECK(zoom_millionths BETWEEN 100000 AND 8000000),
+            filters_json BLOB NOT NULL,
+            client_session_id TEXT NOT NULL,
+            position_sequence INTEGER NOT NULL CHECK(position_sequence >= 0),
+            updated_at_ms INTEGER NOT NULL
+        ) STRICT;",
+    )
+}
+
 #[cfg(test)]
 fn has_table(connection: &Connection, table: &str) -> rusqlite::Result<bool> {
     has_table_runtime(connection, table)
@@ -366,6 +390,7 @@ mod tests {
         assert!(has_table(&connection, "export_record").unwrap());
         assert!(has_table(&connection, "import_generation").unwrap());
         assert!(has_table(&connection, "term").unwrap());
+        assert!(has_table(&connection, "project_navigation").unwrap());
         let count: i64 = connection
             .query_row("SELECT count(*) FROM migration_record", [], |row| {
                 row.get(0)
@@ -422,6 +447,7 @@ mod tests {
         assert!(has_table(&connection, "export_record").unwrap());
         assert!(has_table(&connection, "generation_binding").unwrap());
         assert!(has_table(&connection, "annotation").unwrap());
+        assert!(has_table(&connection, "project_navigation").unwrap());
         let resolved_unit_id: i64 = connection
             .query_row(
                 "SELECT count(*) FROM pragma_table_info('generation_unit')

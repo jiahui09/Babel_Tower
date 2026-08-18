@@ -8,7 +8,10 @@ use serde::{Deserialize, Serialize};
 use sha2::{Digest, Sha256};
 use uuid::Uuid;
 
-use babel_domain::core::{ProjectId, RevisionKind, TaskId, TaskState, WorkPriority};
+use babel_domain::{
+    core::{ProjectId, RevisionKind, TaskId, TaskState, WorkPriority},
+    workbench::NavigationPosition,
+};
 
 use crate::{migration, schema};
 
@@ -84,6 +87,12 @@ pub struct DraftRecovery {
     pub patch: Vec<u8>,
     pub updated_at_ms: i64,
     pub disposition: DraftDisposition,
+}
+
+#[derive(Clone, Copy, Debug, PartialEq, Eq, Serialize, Deserialize)]
+pub struct NavigationSaveReceipt {
+    pub position_sequence: u64,
+    pub accepted: bool,
 }
 
 #[derive(Clone, Debug, PartialEq, Eq)]
@@ -412,6 +421,84 @@ impl ProjectStore {
         created_at_ms: i64,
     ) -> rusqlite::Result<SaveReceipt> {
         self.save_translation_with_hook(source_unit_key, command_id, text, created_at_ms, |_| {})
+    }
+
+    pub fn save_navigation_position(
+        &mut self,
+        position: &NavigationPosition,
+        client_session_id: &str,
+        position_sequence: u64,
+        updated_at_ms: i64,
+    ) -> rusqlite::Result<NavigationSaveReceipt> {
+        position
+            .validate()
+            .map_err(|error| rusqlite::Error::ToSqlConversionFailure(Box::new(error)))?;
+        if position.project_id != self.project_id()? || client_session_id.is_empty() {
+            return Err(rusqlite::Error::InvalidQuery);
+        }
+        let stored_sequence = i64::try_from(position_sequence)
+            .map_err(|error| rusqlite::Error::ToSqlConversionFailure(Box::new(error)))?;
+        let filters_json = serde_json::to_vec(&position.filters)
+            .map_err(|error| rusqlite::Error::ToSqlConversionFailure(Box::new(error)))?;
+        let transaction = self
+            .connection
+            .transaction_with_behavior(TransactionBehavior::Immediate)?;
+        let current = transaction
+            .query_row(
+                "SELECT client_session_id, position_sequence
+                 FROM project_navigation WHERE singleton = 1",
+                [],
+                |row| Ok((row.get::<_, String>(0)?, row.get::<_, i64>(1)?)),
+            )
+            .optional()?;
+        let accepted = current.as_ref().is_none_or(|(session, sequence)| {
+            session != client_session_id || stored_sequence > *sequence
+        });
+        if accepted {
+            transaction.execute(
+                "INSERT INTO project_navigation(
+                    singleton, schema_version, project_id, view, unit_id, resource_id,
+                    region_id, scroll_anchor_unit_id, scroll_offset_px, zoom_millionths,
+                    filters_json, client_session_id, position_sequence, updated_at_ms
+                 ) VALUES (1, ?1, ?2, ?3, ?4, ?5, ?6, ?7, ?8, ?9, ?10, ?11, ?12, ?13)
+                 ON CONFLICT(singleton) DO UPDATE SET
+                    schema_version = excluded.schema_version,
+                    project_id = excluded.project_id,
+                    view = excluded.view,
+                    unit_id = excluded.unit_id,
+                    resource_id = excluded.resource_id,
+                    region_id = excluded.region_id,
+                    scroll_anchor_unit_id = excluded.scroll_anchor_unit_id,
+                    scroll_offset_px = excluded.scroll_offset_px,
+                    zoom_millionths = excluded.zoom_millionths,
+                    filters_json = excluded.filters_json,
+                    client_session_id = excluded.client_session_id,
+                    position_sequence = excluded.position_sequence,
+                    updated_at_ms = excluded.updated_at_ms",
+                params![
+                    i64::from(position.schema_version),
+                    position.project_id.as_bytes().as_slice(),
+                    position.view.as_str(),
+                    position.unit_id.map(|id| id.as_bytes().to_vec()),
+                    position.resource_id.map(|id| id.as_bytes().to_vec()),
+                    position.region_id.map(|id| id.as_bytes().to_vec()),
+                    position
+                        .scroll_anchor_unit_id
+                        .map(|id| id.as_bytes().to_vec()),
+                    position.scroll_offset_px,
+                    i64::from(position.zoom_millionths),
+                    filters_json,
+                    client_session_id,
+                    stored_sequence,
+                    updated_at_ms,
+                ],
+            )?;
+        }
+        transaction.commit()?;
+        Ok(NavigationSaveReceipt {
+            position_sequence,
+            accepted,
+        })
     }
 
     #[doc(hidden)]

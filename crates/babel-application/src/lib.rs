@@ -19,10 +19,13 @@ use babel_adapter_protocol::{
     Adapter, AdapterError, CancellationToken, Cursor as AdapterCursor, ExecutionContext,
     ExtractedUnit, InventoryItem, OverlayUnit, Page, TaskBudget,
 };
-use babel_domain::core::{ProjectId, RevisionKind, TaskId, TaskState, WorkPriority};
+use babel_domain::{
+    core::{ProjectId, ResourceId, RevisionKind, TaskId, TaskState, UnitId, WorkPriority},
+    workbench::{NavigationPosition, TranslationStatus, WorkspaceView},
+};
 use babel_epub_adapter::EpubAdapter;
 use babel_markdown_adapter::MarkdownAdapter;
-use babel_resource_graph::{RESOURCE_GRAPH_SCHEMA_VERSION, ResourceGraph, ResourceKind};
+use babel_resource_graph::{Locator, RESOURCE_GRAPH_SCHEMA_VERSION, ResourceGraph, ResourceKind};
 use babel_runtime::{
     ipc::MAX_FRAME_BYTES,
     process_worker::{ProcessWorker, WorkerCancelToken, WorkerError, WorkerLaunch},
@@ -34,9 +37,9 @@ use babel_storage::{
     project::{
         AnnotationRecord, BatchReplaceReceipt, DuplicateSourceGroup, GenerationBatch,
         GenerationBindingRecord, GenerationBindingView, GenerationDescriptor, GenerationEdgeRecord,
-        GenerationResourceRecord, GenerationUnitRecord, MarkerRecord, ObjectRecord, ProjectStore,
-        ReplacePreviewItem, SaveReceipt, TaskRecord, TermRecord, TranslationHistoryItem,
-        UpsertTermRequest, candidate_set_hash,
+        GenerationResourceRecord, GenerationUnitRecord, MarkerRecord, NavigationSaveReceipt,
+        ObjectRecord, ProjectStore, ReplacePreviewItem, SaveReceipt, TaskRecord, TermRecord,
+        TranslationHistoryItem, UpsertTermRequest, candidate_set_hash,
     },
     query::ProjectQuery,
 };
@@ -221,6 +224,49 @@ pub struct FormatFileExportReport {
     pub output_hash: [u8; 32],
     pub byte_length: u64,
     pub path: PathBuf,
+}
+
+pub const TRANSLATION_WORK_ITEM_SCHEMA_VERSION: u32 = 1;
+
+#[derive(Clone, Debug, PartialEq, Eq, Serialize, Deserialize)]
+pub struct ResourceAssociation {
+    pub resource_id: ResourceId,
+    pub kind: String,
+    pub semantic_path: String,
+    pub relation: String,
+}
+
+#[derive(Clone, Debug, PartialEq, Serialize, Deserialize)]
+pub struct TranslationWorkItem {
+    pub schema_version: u32,
+    pub project_id: ProjectId,
+    pub view: WorkspaceView,
+    pub generation_id: [u8; 16],
+    pub unit_id: UnitId,
+    pub source_unit_key: [u8; 32],
+    pub source: UnitContent,
+    pub source_text: String,
+    pub translation: Option<String>,
+    pub status: TranslationStatus,
+    pub locator: Locator,
+    pub reading_order: u64,
+    pub revision_id: Option<i64>,
+    pub revision_commit_sequence: Option<i64>,
+    pub project_commit_sequence: i64,
+    pub resources: Vec<ResourceAssociation>,
+}
+
+#[derive(Clone, Debug, PartialEq, Serialize, Deserialize)]
+pub struct ResourceQueuePage {
+    pub items: Vec<TranslationWorkItem>,
+    pub next_cursor: Option<ResourceQueueCursor>,
+    pub project_commit_sequence: i64,
+}
+
+#[derive(Clone, Copy, Debug, PartialEq, Eq, Serialize, Deserialize)]
+pub struct ResourceQueueCursor {
+    pub reading_order: u64,
+    pub unit_id: UnitId,
 }
 
 #[derive(Clone, Debug, PartialEq, Eq, Serialize, Deserialize)]
@@ -1125,6 +1171,10 @@ pub enum KernelError {
     FormatValidationFailed { adapter_id: String, issues: usize },
     #[error("TXT export validation failed with {0} blocking issue(s)")]
     TxtValidationFailed(usize),
+    #[error("workbench projection is invalid: {0}")]
+    InvalidWorkbenchProjection(String),
+    #[error("translation work item was not found")]
+    WorkItemNotFound,
 }
 
 pub struct Kernel {
@@ -1275,6 +1325,34 @@ impl Kernel {
             Response::Done => Ok(()),
             _ => Err(KernelError::UnexpectedResponse),
         }
+    }
+
+    pub fn save_navigation_position(
+        &self,
+        position: NavigationPosition,
+        client_session_id: String,
+        position_sequence: u64,
+        updated_at_ms: i64,
+    ) -> Result<NavigationSaveReceipt, KernelError> {
+        let response = self.request(
+            &self.interactive,
+            Command::SaveNavigationPosition {
+                position,
+                client_session_id,
+                position_sequence,
+                updated_at_ms,
+            },
+        )?;
+        match response {
+            Response::NavigationSaved(receipt) => Ok(receipt),
+            _ => Err(KernelError::UnexpectedResponse),
+        }
+    }
+
+    pub fn navigation_position(
+        &self,
+    ) -> Result<Option<babel_storage::query::SavedNavigationPosition>, KernelError> {
+        Ok(self.query()?.navigation_position()?)
     }
 
     pub fn publish_source(
@@ -1916,6 +1994,62 @@ impl Kernel {
         Ok(ProjectQuery::open(self.database_path())?)
     }
 
+    pub fn translation_work_item(
+        &self,
+        unit_id: UnitId,
+        view: WorkspaceView,
+    ) -> Result<TranslationWorkItem, KernelError> {
+        let query = self.query()?;
+        let commit_sequence = query.commit_sequence()?;
+        let record = query
+            .workbench_unit(unit_id.as_bytes())?
+            .ok_or(KernelError::WorkItemNotFound)?;
+        assemble_work_item(&query, self.project_id, view, commit_sequence, record)
+    }
+
+    pub fn resource_queue(
+        &self,
+        after: Option<ResourceQueueCursor>,
+        limit: usize,
+    ) -> Result<ResourceQueuePage, KernelError> {
+        let query = self.query()?;
+        let project_commit_sequence = query.commit_sequence()?;
+        let page_size = limit.clamp(1, 256);
+        let mut records = query.resource_queue_after(
+            after.map(|cursor| (cursor.reading_order, *cursor.unit_id.as_bytes())),
+            page_size + 1,
+        )?;
+        let has_more = records.len() > page_size;
+        if has_more {
+            records.truncate(page_size);
+        }
+        let items = records
+            .into_iter()
+            .map(|record| {
+                assemble_work_item(
+                    &query,
+                    self.project_id,
+                    WorkspaceView::Resources,
+                    project_commit_sequence,
+                    record,
+                )
+            })
+            .collect::<Result<Vec<_>, _>>()?;
+        let next_cursor = has_more
+            .then(|| {
+                items.last().map(|item| ResourceQueueCursor {
+                    reading_order: item.reading_order,
+                    unit_id: item.unit_id,
+                })
+            })
+            .flatten();
+        Ok(ResourceQueuePage {
+            items,
+            next_cursor,
+            project_commit_sequence,
+        })
+    }
+
     fn request(
         &self,
         queue: &SyncSender<WriterMessage>,
@@ -1929,6 +2063,87 @@ impl Kernel {
             .recv()
             .map_err(|_| KernelError::WriterUnavailable)?
     }
+}
+
+fn assemble_work_item(
+    query: &ProjectQuery,
+    project_id: ProjectId,
+    view: WorkspaceView,
+    project_commit_sequence: i64,
+    record: babel_storage::query::WorkbenchUnitRecord,
+) -> Result<TranslationWorkItem, KernelError> {
+    let locator: Locator = serde_json::from_slice(&record.locator_json)
+        .map_err(|error| KernelError::InvalidWorkbenchProjection(error.to_string()))?;
+    let source: UnitContent = serde_json::from_slice(&record.tir_json)
+        .map_err(|error| KernelError::InvalidWorkbenchProjection(error.to_string()))?;
+    source
+        .validate()
+        .map_err(|error| KernelError::InvalidWorkbenchProjection(error.to_string()))?;
+
+    let mut resources = Vec::new();
+    let primary_resource_id = ResourceId::from_bytes(record.resource_id);
+    resources.push(ResourceAssociation {
+        resource_id: primary_resource_id,
+        kind: record.resource_kind,
+        semantic_path: record.semantic_path,
+        relation: "source".to_owned(),
+    });
+    let mut seen = HashSet::from([record.resource_id]);
+    for resource in query.related_resources(&record.generation_id, &record.resource_id)? {
+        if seen.insert(resource.resource_id) {
+            resources.push(ResourceAssociation {
+                resource_id: ResourceId::from_bytes(resource.resource_id),
+                kind: resource.kind,
+                semantic_path: resource.semantic_path,
+                relation: resource.edge_kind,
+            });
+        }
+    }
+    for token in &source.tokens {
+        let Token::Reference {
+            resource_id,
+            relation,
+        } = token
+        else {
+            continue;
+        };
+        if !seen.insert(*resource_id.as_bytes()) {
+            continue;
+        }
+        if let Some(resource) =
+            query.generation_resource(&record.generation_id, resource_id.as_bytes())?
+        {
+            resources.push(ResourceAssociation {
+                resource_id: *resource_id,
+                kind: resource.kind,
+                semantic_path: resource.semantic_path,
+                relation: relation.clone(),
+            });
+        }
+    }
+
+    let status = match record.translation.as_deref() {
+        None | Some("") => TranslationStatus::Untranslated,
+        Some(_) => TranslationStatus::Draft,
+    };
+    Ok(TranslationWorkItem {
+        schema_version: TRANSLATION_WORK_ITEM_SCHEMA_VERSION,
+        project_id,
+        view,
+        generation_id: record.generation_id,
+        unit_id: UnitId::from_bytes(record.unit_id),
+        source_unit_key: record.source_unit_key,
+        source,
+        source_text: record.source_text,
+        translation: record.translation,
+        status,
+        locator,
+        reading_order: record.reading_order,
+        revision_id: record.revision_id,
+        revision_commit_sequence: record.revision_commit_sequence,
+        project_commit_sequence,
+        resources,
+    })
 }
 
 fn profile_import(stage: &str, elapsed: Duration) {
@@ -1975,6 +2190,12 @@ enum Command {
         base_revision_id: Option<i64>,
         client_session_id: String,
         patch: Vec<u8>,
+        updated_at_ms: i64,
+    },
+    SaveNavigationPosition {
+        position: NavigationPosition,
+        client_session_id: String,
+        position_sequence: u64,
         updated_at_ms: i64,
     },
     RegisterSourceObject {
@@ -2110,6 +2331,7 @@ enum Command {
 
 enum Response {
     Saved(SaveReceipt),
+    NavigationSaved(NavigationSaveReceipt),
     Task(TaskRecord),
     Diagnostic(i64),
     GarbageCollected(GcReport),
@@ -2285,6 +2507,17 @@ fn execute(
             )?;
             Ok(Response::Done)
         }
+        Command::SaveNavigationPosition {
+            position,
+            client_session_id,
+            position_sequence,
+            updated_at_ms,
+        } => Ok(Response::NavigationSaved(store.save_navigation_position(
+            &position,
+            &client_session_id,
+            position_sequence,
+            updated_at_ms,
+        )?)),
         Command::RegisterSourceObject {
             source_id,
             media_type,
@@ -3982,5 +4215,234 @@ mod tests {
                 ("Alpha", Some("阿尔法")),
             ]
         );
+    }
+
+    #[test]
+    fn one_translation_work_item_is_shared_by_every_workspace_view() {
+        ensure_txt_worker_binary();
+        let temp = TempDir::new().unwrap();
+        let project = temp.path().join("work-item.babel");
+        let kernel = Kernel::open(&project).unwrap();
+        kernel
+            .import_txt_reader([31; 16], Cursor::new(b"Alpha\nBeta\n".to_vec()), 1_000)
+            .unwrap();
+        let row = kernel.query().unwrap().page_after(-1, 1).unwrap().remove(0);
+        let unit_id = UnitId::from_bytes(row.unit_id.clone().try_into().unwrap());
+
+        let long_form = kernel
+            .translation_work_item(unit_id, WorkspaceView::LongForm)
+            .unwrap();
+        let units = kernel
+            .translation_work_item(unit_id, WorkspaceView::Units)
+            .unwrap();
+        let resources = kernel
+            .translation_work_item(unit_id, WorkspaceView::Resources)
+            .unwrap();
+
+        assert_eq!(long_form.unit_id, units.unit_id);
+        assert_eq!(units.unit_id, resources.unit_id);
+        assert_eq!(long_form.source, units.source);
+        assert_eq!(units.source, resources.source);
+        assert_eq!(long_form.status, TranslationStatus::Untranslated);
+        assert_eq!(long_form.view, WorkspaceView::LongForm);
+        assert_eq!(units.view, WorkspaceView::Units);
+        assert_eq!(resources.view, WorkspaceView::Resources);
+
+        kernel
+            .save_translation(
+                row.source_unit_key.try_into().unwrap(),
+                [32; 32],
+                "阿尔法".to_owned(),
+                2_000,
+            )
+            .unwrap();
+        let translated = kernel
+            .translation_work_item(unit_id, WorkspaceView::LongForm)
+            .unwrap();
+        assert_eq!(translated.translation.as_deref(), Some("阿尔法"));
+        assert_eq!(translated.status, TranslationStatus::Draft);
+        assert_eq!(translated.revision_id, Some(1));
+        assert_eq!(translated.revision_commit_sequence, Some(1));
+        assert_eq!(translated.project_commit_sequence, 1);
+    }
+
+    #[test]
+    fn navigation_rejects_stale_updates_and_recovers_after_reopen() {
+        let temp = TempDir::new().unwrap();
+        let project = temp.path().join("navigation.babel");
+        fs::create_dir_all(&project).unwrap();
+        let mut store = ProjectStore::open(project.join("project.sqlite3")).unwrap();
+        store.seed_units(1).unwrap();
+        drop(store);
+
+        let expected;
+        {
+            let kernel = Kernel::open(&project).unwrap();
+            let unit_id = UnitId::from_bytes(
+                kernel.query().unwrap().page_after(-1, 1).unwrap()[0]
+                    .unit_id
+                    .clone()
+                    .try_into()
+                    .unwrap(),
+            );
+            let mut first = NavigationPosition::new(kernel.project_id(), WorkspaceView::LongForm);
+            first.unit_id = Some(unit_id);
+            first.scroll_anchor_unit_id = Some(unit_id);
+            first.scroll_offset_px = 240;
+            first.filters.query = Some("未完成".to_owned());
+            let saved = kernel
+                .save_navigation_position(first.clone(), "session-a".to_owned(), 2, 100)
+                .unwrap();
+            assert!(saved.accepted);
+
+            let mut stale = first.clone();
+            stale.view = WorkspaceView::Units;
+            stale.scroll_offset_px = 480;
+            let stale_receipt = kernel
+                .save_navigation_position(stale, "session-a".to_owned(), 1, 101)
+                .unwrap();
+            assert!(!stale_receipt.accepted);
+            assert_eq!(
+                kernel.navigation_position().unwrap().unwrap().position,
+                first
+            );
+
+            let mut resumed = first;
+            resumed.view = WorkspaceView::Units;
+            resumed.scroll_offset_px = 64;
+            resumed.filters.only_incomplete = true;
+            let new_session = kernel
+                .save_navigation_position(resumed.clone(), "session-b".to_owned(), 0, 102)
+                .unwrap();
+            assert!(new_session.accepted);
+            assert_eq!(kernel.query().unwrap().commit_sequence().unwrap(), 0);
+            expected = resumed;
+        }
+
+        let reopened = Kernel::open(&project).unwrap();
+        let recovered = reopened.navigation_position().unwrap().unwrap();
+        assert_eq!(recovered.position, expected);
+        assert_eq!(recovered.client_session_id, "session-b");
+        assert_eq!(recovered.position_sequence, 0);
+        assert_eq!(recovered.updated_at_ms, 102);
+    }
+
+    #[test]
+    fn resource_queue_pages_image_regions_in_stable_reading_order() {
+        let temp = TempDir::new().unwrap();
+        let project = temp.path().join("resource-queue.babel");
+        fs::create_dir_all(&project).unwrap();
+        let generation_id = babel_domain::core::GenerationId::new();
+        let image_id = ResourceId::new();
+        let first_region_id = ResourceId::new();
+        let second_region_id = ResourceId::new();
+        let mut store = ProjectStore::open(project.join("project.sqlite3")).unwrap();
+        store
+            .begin_generation(&GenerationDescriptor {
+                generation_id: *generation_id.as_bytes(),
+                source_snapshot_hash: [41; 32],
+                adapter_id: "org.babel-tower.image-test".to_owned(),
+                adapter_build: "test".to_owned(),
+                identity_version: 1,
+                created_at_ms: 1,
+            })
+            .unwrap();
+
+        let polygon = vec![[0.0, 0.0], [100.0, 0.0], [100.0, 40.0], [0.0, 40.0]];
+        let region_locator = |region_id: ResourceId| Locator::SpatialRegion {
+            resource_id: image_id,
+            polygon: polygon.clone(),
+            coordinate_space: format!("pixel:{:?}", region_id.as_bytes()),
+        };
+        let empty_candidates = serde_json::to_vec(&Vec::<[u8; 16]>::new()).unwrap();
+        let units = [
+            (first_region_id, [51; 16], [61; 32], 2_u64, "first"),
+            (second_region_id, [52; 16], [62; 32], 5_u64, "second"),
+        ];
+        let mut batch = GenerationBatch {
+            resources: vec![GenerationResourceRecord {
+                resource_id: *image_id.as_bytes(),
+                resource_key: [40; 32],
+                kind: "Image".to_owned(),
+                semantic_path: "images/page-1.png".to_owned(),
+                locator_json: serde_json::to_vec(&Locator::OpaqueAdapter {
+                    adapter_id: "image-test".to_owned(),
+                    schema_version: 1,
+                    bytes_hash: [41; 32],
+                })
+                .unwrap(),
+            }],
+            ..GenerationBatch::default()
+        };
+        for (index, (region_id, extracted_id, source_key, reading_order, text)) in
+            units.into_iter().enumerate()
+        {
+            let locator = region_locator(region_id);
+            batch.resources.push(GenerationResourceRecord {
+                resource_id: *region_id.as_bytes(),
+                resource_key: [70 + index as u8; 32],
+                kind: "ImageRegion".to_owned(),
+                semantic_path: format!("images/page-1.png#region-{}", index + 1),
+                locator_json: serde_json::to_vec(&locator).unwrap(),
+            });
+            batch.edges.push(GenerationEdgeRecord {
+                from_resource_id: *region_id.as_bytes(),
+                to_resource_id: *image_id.as_bytes(),
+                edge_kind: "RegionOf".to_owned(),
+                ordinal: index as u32,
+            });
+            batch.units.push(GenerationUnitRecord {
+                extracted_unit_id: extracted_id,
+                source_unit_key: source_key,
+                resource_id: *region_id.as_bytes(),
+                locator_json: serde_json::to_vec(&locator).unwrap(),
+                tir_json: serde_json::to_vec(&UnitContent {
+                    schema_version: babel_tir::TIR_SCHEMA_VERSION,
+                    tokens: vec![Token::Text {
+                        text: text.to_owned(),
+                        style_hint: None,
+                    }],
+                })
+                .unwrap(),
+                reading_order,
+            });
+            batch.bindings.push(GenerationBindingRecord {
+                binding_id: [80 + index as u8; 16],
+                extracted_unit_id: extracted_id,
+                disposition: "Orphaned".to_owned(),
+                selected_unit_id: None,
+                policy_version: 1,
+                candidates_hash: candidate_set_hash(&empty_candidates),
+                candidates_json: empty_candidates.clone(),
+            });
+        }
+        store
+            .append_generation_batch(generation_id.as_bytes(), &[91; 32], &[92; 32], &batch)
+            .unwrap();
+        store.seal_generation(generation_id.as_bytes()).unwrap();
+        store
+            .activate_generation(generation_id.as_bytes(), 2)
+            .unwrap();
+        drop(store);
+
+        let kernel = Kernel::open(&project).unwrap();
+        let first_page = kernel.resource_queue(None, 1).unwrap();
+        assert_eq!(first_page.items.len(), 1);
+        assert_eq!(first_page.items[0].reading_order, 2);
+        assert_eq!(first_page.items[0].view, WorkspaceView::Resources);
+        assert!(matches!(
+            first_page.items[0].locator,
+            Locator::SpatialRegion { .. }
+        ));
+        assert_eq!(first_page.items[0].resources[0].kind, "ImageRegion");
+        assert_eq!(first_page.items[0].resources[1].kind, "Image");
+        assert_eq!(first_page.items[0].resources[1].relation, "RegionOf");
+        assert_eq!(first_page.next_cursor.unwrap().reading_order, 2);
+
+        let second_page = kernel.resource_queue(first_page.next_cursor, 1).unwrap();
+        assert_eq!(second_page.items.len(), 1);
+        assert_eq!(second_page.items[0].reading_order, 5);
+        assert_ne!(second_page.items[0].unit_id, first_page.items[0].unit_id);
+        assert_eq!(second_page.next_cursor, None);
     }
 }

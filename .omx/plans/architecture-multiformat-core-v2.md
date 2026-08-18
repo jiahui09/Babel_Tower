@@ -525,10 +525,14 @@ Core 启动时生成一次性会话 nonce；握手必须证明 nonce、协议身
 - `get_unit_context(unit_id, before, after)`
 - `search_units(query, filters, cursor)`
 - `get_resource_context(unit_id)`
+- `get_translation_work_item(unit_id, view)`：返回格式无关的当前工作项投影；`view` 只决定文本、单元或资源呈现方式。
+- `get_resource_queue(project, scope, cursor, filters)`：返回稳定顺序的资源工作项摘要和前后游标，不读取整本图片正文。
 - `get_validation_issues(scope, cursor)`
 - `subscribe_project_changes(after_commit_sequence)`
 
 返回值包含 `commit_sequence`。UI 若收到更旧序列的异步结果必须丢弃，避免切换页面后旧查询覆盖新状态。
+
+工作项投影不得成为第二份权威数据：它由 `unit_id`、当前翻译修订、资源图关系、定位器和校验投影按需重建。资源队列的顺序来自资源图的 `ReadingOrderAfter` 与适配器声明的稳定排序；筛选只影响游标，不改变工作项身份。
 
 ### 10.2 搜索
 
@@ -542,6 +546,8 @@ Core 启动时生成一次性会话 nonce；握手必须证明 nonce、协议身
 UI 发送语义命令而非整页文档：`ReplaceTextRange`、`InsertToken`、`MoveProtectedToken`、`SetTranslationState`、`ApplyTerm`、`AddAnnotation`。核心校验基于版本的前置条件；冲突返回当前头与可重放建议。
 
 按键到画面由前端本地编辑状态完成，不等待磁盘；耐久保存独立显示。无论项目大小，单次输入不得触发全项目状态计算、全文序列化或全索引刷新。
+
+统一编辑器只发送工作项级语义命令，不发送格式私有编辑器 JSON。文本命令使用 TIR 范围和受保护 token；图片命令使用 `unit_id + region_id` 以及译文、背景清理和排版参数。适配器在导出阶段将同一修订投影回源格式或派生图片。
 
 ### 10.4 草稿与未提交编辑
 
