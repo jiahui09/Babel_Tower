@@ -10,6 +10,8 @@ members = [
   "crates/babel-markdown-adapter",
   "crates/babel-epub-adapter",
   "crates/babel-application",
+  "crates/babel-image",
+  "crates/babel-ocr",
   "crates/babel-storage",
   "crates/babel-runtime",
   "tools/phase0-runner",
@@ -19,6 +21,7 @@ members = [
   "tools/txt-worker",
   "tools/markdown-worker",
   "tools/epub-worker",
+  "tools/ocr-worker",
 ]
 exclude = ["phase0"]
 
@@ -29,11 +32,14 @@ rust-version = "1.97"
 
 [workspace.dependencies]
 anyhow = "1.0.104"
+base64 = "0.22.1"
 clap = { version = "4.6.6", features = ["derive"] }
 comrak = { version = "0.54.0", default-features = false }
 encoding_rs = "0.8.35"
 hex = "0.4.3"
 hdrhistogram = "7.6.0"
+ab_glyph = "0.2.32"
+image = { version = "0.25.10", default-features = false, features = ["jpeg", "png", "webp"] }
 interprocess = "2.4.3"
 prost = "0.14.4"
 quick-xml = { version = "0.41.0", features = ["encoding"] }

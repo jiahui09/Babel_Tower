@@ -84,6 +84,7 @@ impl std::fmt::Display for WorkerExitDiagnostic {
 pub struct WorkerLaunch {
     pub program: std::path::PathBuf,
     pub args: Vec<std::ffi::OsString>,
+    pub environment: Vec<(std::ffi::OsString, std::ffi::OsString)>,
     pub capability_token: Vec<u8>,
     pub handshake_timeout: Duration,
     pub request_timeout: Duration,
@@ -95,6 +96,7 @@ impl WorkerLaunch {
         Self {
             program: program.into(),
             args: Vec::new(),
+            environment: Vec::new(),
             capability_token,
             handshake_timeout: Duration::from_secs(5),
             request_timeout: Duration::from_secs(30),
@@ -104,6 +106,12 @@ impl WorkerLaunch {
 
     pub fn arg(mut self, arg: impl AsRef<OsStr>) -> Self {
         self.args.push(arg.as_ref().to_owned());
+        self
+    }
+
+    pub fn env(mut self, key: impl AsRef<OsStr>, value: impl AsRef<OsStr>) -> Self {
+        self.environment
+            .push((key.as_ref().to_owned(), value.as_ref().to_owned()));
         self
     }
 }
@@ -149,6 +157,7 @@ impl ProcessWorker {
         let mut command = Command::new(&launch.program);
         command
             .args(&launch.args)
+            .envs(launch.environment.iter().map(|(key, value)| (key, value)))
             .stdin(Stdio::piped())
             .stdout(Stdio::piped())
             .stderr(Stdio::piped());

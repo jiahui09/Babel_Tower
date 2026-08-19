@@ -1,0 +1,18 @@
+{
+  "source": "Source",
+  "sourceView": "Source",
+  "diffView": "Diff",
+  "openDiff": "Open diff",
+  "translation": "Translation",
+  "bold": "Bold",
+  "italic": "Italic",
+  "strike": "Strikethrough",
+  "code": "Inline code",
+  "previousUnit": "Previous unit",
+  "nextUnit": "Next unit",
+  "closeDirtyTitle": "Close an unsaved tab?",
+  "closeDirtyDescription": "Local edits have not been acknowledged by the core. A recovery draft will remain, but it is not a saved translation.",
+  "reload": "Reload",
+  "copyDraft": "Copy draft",
+  "saveConflict": "The translation changed elsewhere. Your local text is still preserved."
+}

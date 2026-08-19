@@ -1,6 +1,6 @@
 use rusqlite::{Connection, OptionalExtension, TransactionBehavior};
 
-pub const CURRENT_SCHEMA_VERSION: i64 = 9;
+pub const CURRENT_SCHEMA_VERSION: i64 = 12;
 
 pub fn migrate(connection: &mut Connection) -> rusqlite::Result<()> {
     migrate_to(connection, CURRENT_SCHEMA_VERSION)
@@ -24,6 +24,9 @@ pub(crate) fn migrate_to(connection: &mut Connection, target_version: i64) -> ru
             7 => migration_7(&transaction)?,
             8 => migration_8(&transaction)?,
             9 => migration_9(&transaction)?,
+            10 => migration_10(&transaction)?,
+            11 => migration_11(&transaction)?,
+            12 => migration_12(&transaction)?,
             _ => unreachable!(),
         }
         transaction.pragma_update(None, "user_version", target)?;
@@ -357,6 +360,76 @@ fn migration_9(connection: &Connection) -> rusqlite::Result<()> {
     )
 }
 
+fn migration_10(connection: &Connection) -> rusqlite::Result<()> {
+    connection.execute_batch(
+        "CREATE TABLE image_region_ocr_cache (
+            generation_id BLOB NOT NULL CHECK(length(generation_id) = 16),
+            region_resource_id BLOB NOT NULL CHECK(length(region_resource_id) = 16),
+            model_hash BLOB NOT NULL CHECK(length(model_hash) = 32),
+            candidate_json BLOB NOT NULL,
+            created_at_ms INTEGER NOT NULL,
+            PRIMARY KEY(generation_id, region_resource_id, model_hash),
+            FOREIGN KEY(generation_id, region_resource_id)
+                REFERENCES generation_resource(generation_id, resource_id)
+        ) STRICT;
+        CREATE TABLE image_region_revision (
+            revision_id INTEGER PRIMARY KEY,
+            unit_id BLOB NOT NULL REFERENCES unit(unit_id),
+            generation_id BLOB NOT NULL CHECK(length(generation_id) = 16),
+            region_resource_id BLOB NOT NULL CHECK(length(region_resource_id) = 16),
+            command_id BLOB NOT NULL UNIQUE CHECK(length(command_id) = 32),
+            commit_sequence INTEGER NOT NULL UNIQUE,
+            parent_revision_id INTEGER REFERENCES image_region_revision(revision_id),
+            corrected_source_text TEXT,
+            render_parameters_json BLOB NOT NULL,
+            derived_object_hash BLOB
+                CHECK(derived_object_hash IS NULL OR length(derived_object_hash) = 32),
+            created_at_ms INTEGER NOT NULL,
+            FOREIGN KEY(generation_id, region_resource_id)
+                REFERENCES generation_resource(generation_id, resource_id),
+            FOREIGN KEY(derived_object_hash) REFERENCES object_record(object_hash)
+        ) STRICT;
+        CREATE INDEX image_region_revision_unit
+            ON image_region_revision(unit_id, revision_id);
+        CREATE TABLE image_region_head (
+            unit_id BLOB PRIMARY KEY REFERENCES unit(unit_id),
+            revision_id INTEGER NOT NULL REFERENCES image_region_revision(revision_id)
+        ) STRICT;",
+    )
+}
+
+fn migration_11(connection: &Connection) -> rusqlite::Result<()> {
+    connection.execute_batch(
+        "ALTER TABLE translation_revision
+         ADD COLUMN document_schema_version INTEGER
+         CHECK(document_schema_version IS NULL OR document_schema_version > 0);
+         ALTER TABLE translation_revision
+         ADD COLUMN document_json BLOB;",
+    )
+}
+
+fn migration_12(connection: &Connection) -> rusqlite::Result<()> {
+    connection.execute_batch(
+        "CREATE TABLE workspace_operation_log (
+            operation_id TEXT PRIMARY KEY,
+            kind TEXT NOT NULL CHECK(kind IN ('create-folder', 'rename', 'move', 'trash', 'restore', 'reveal')),
+            state TEXT NOT NULL CHECK(state IN ('Preparing', 'Completed', 'CancelledAfterCrash', 'Failed')),
+            source_node_id TEXT,
+            target_node_id TEXT,
+            source_path TEXT,
+            target_path TEXT,
+            recycle_path TEXT,
+            commit_sequence INTEGER CHECK(commit_sequence IS NULL OR commit_sequence >= 0),
+            error TEXT,
+            created_at_ms INTEGER NOT NULL,
+            updated_at_ms INTEGER NOT NULL,
+            completed_at_ms INTEGER
+        ) STRICT;
+        CREATE INDEX workspace_operation_log_state
+            ON workspace_operation_log(state, updated_at_ms);",
+    )
+}
+
 #[cfg(test)]
 fn has_table(connection: &Connection, table: &str) -> rusqlite::Result<bool> {
     has_table_runtime(connection, table)
@@ -391,6 +464,18 @@ mod tests {
         assert!(has_table(&connection, "import_generation").unwrap());
         assert!(has_table(&connection, "term").unwrap());
         assert!(has_table(&connection, "project_navigation").unwrap());
+        assert!(has_table(&connection, "image_region_ocr_cache").unwrap());
+        assert!(has_table(&connection, "image_region_revision").unwrap());
+        assert!(has_table(&connection, "image_region_head").unwrap());
+        let document_columns: i64 = connection
+            .query_row(
+                "SELECT count(*) FROM pragma_table_info('translation_revision')
+                 WHERE name IN ('document_schema_version', 'document_json')",
+                [],
+                |row| row.get(0),
+            )
+            .unwrap();
+        assert_eq!(document_columns, 2);
         let count: i64 = connection
             .query_row("SELECT count(*) FROM migration_record", [], |row| {
                 row.get(0)
@@ -448,6 +533,17 @@ mod tests {
         assert!(has_table(&connection, "generation_binding").unwrap());
         assert!(has_table(&connection, "annotation").unwrap());
         assert!(has_table(&connection, "project_navigation").unwrap());
+        assert!(has_table(&connection, "image_region_ocr_cache").unwrap());
+        assert!(has_table(&connection, "image_region_revision").unwrap());
+        let document_columns: i64 = connection
+            .query_row(
+                "SELECT count(*) FROM pragma_table_info('translation_revision')
+                 WHERE name IN ('document_schema_version', 'document_json')",
+                [],
+                |row| row.get(0),
+            )
+            .unwrap();
+        assert_eq!(document_columns, 2);
         let resolved_unit_id: i64 = connection
             .query_row(
                 "SELECT count(*) FROM pragma_table_info('generation_unit')

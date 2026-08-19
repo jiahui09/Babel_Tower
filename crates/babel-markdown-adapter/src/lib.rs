@@ -8,7 +8,7 @@ use std::{
 
 use babel_adapter_protocol::{
     ADAPTER_PROTOCOL_MAJOR, ADAPTER_PROTOCOL_MINOR, Adapter, AdapterError, AdapterManifest,
-    CapabilityIo, Cursor, ExecutionContext, ExportPlan, ExtractedUnit, InventoryItem,
+    CapabilityIo, Cursor, ExecutionContext, ExportPlan, ExtractedUnit, ImageOverlay, InventoryItem,
     MaterializeProgress, ObjectHandle, Operation, OverlayUnit, Page, ProbeResult, ProtocolRange,
     SafetyLimits, StagingHandle, VerificationReport,
 };
@@ -454,6 +454,25 @@ impl Adapter for MarkdownAdapter {
             byte_length: bytes.len() as u64,
             issue_codes,
         })
+    }
+
+    fn apply_image_overlays(
+        &self,
+        _plan: &ExportPlan,
+        _input: &ObjectHandle,
+        overlays: &[ImageOverlay],
+        _staging: &StagingHandle,
+        _io: &dyn CapabilityIo,
+        _context: &ExecutionContext<'_>,
+    ) -> Result<(), AdapterError> {
+        for overlay in overlays {
+            if !matches!(overlay.source_locator, Locator::ByteSpan { .. }) {
+                return Err(AdapterError::InvalidInput(
+                    "Markdown image is not available in the project resource closure".to_owned(),
+                ));
+            }
+        }
+        Ok(())
     }
 }
 

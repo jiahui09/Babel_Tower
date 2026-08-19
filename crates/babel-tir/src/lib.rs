@@ -7,6 +7,53 @@ use serde::{Deserialize, Serialize};
 use thiserror::Error;
 
 pub const TIR_SCHEMA_VERSION: u32 = 1;
+pub const TRANSLATION_DOCUMENT_SCHEMA_VERSION: u32 = 1;
+
+#[derive(Clone, Debug, PartialEq, Eq, Serialize, Deserialize)]
+#[serde(rename_all = "camelCase")]
+pub struct TranslationDocumentV1 {
+    pub schema_version: u32,
+    pub blocks: Vec<TranslationBlock>,
+}
+
+#[derive(Clone, Debug, PartialEq, Eq, Serialize, Deserialize)]
+#[serde(rename_all = "camelCase")]
+pub struct TranslationBlock {
+    pub kind: TranslationBlockKind,
+    pub inlines: Vec<TranslationInline>,
+}
+
+#[derive(Clone, Copy, Debug, PartialEq, Eq, Serialize, Deserialize)]
+#[serde(rename_all = "camelCase")]
+pub enum TranslationBlockKind {
+    Paragraph,
+    Heading,
+    Quote,
+    ListItem,
+    CodeBlock,
+}
+
+#[derive(Clone, Debug, PartialEq, Eq, Serialize, Deserialize)]
+#[serde(tag = "kind", rename_all = "camelCase")]
+pub enum TranslationInline {
+    Text { text: String, marks: Vec<TextMark> },
+    Protected {
+        token_id: String,
+        label: String,
+        signature: String,
+    },
+    Placeholder { name: String, rule: String },
+}
+
+#[derive(Clone, Debug, PartialEq, Eq, Serialize, Deserialize)]
+#[serde(tag = "kind", rename_all = "camelCase")]
+pub enum TextMark {
+    Bold,
+    Italic,
+    Strike,
+    Code,
+    Link { href: String },
+}
 
 #[derive(Clone, Debug, PartialEq, Eq, Serialize, Deserialize)]
 pub enum BreakKind {
@@ -70,6 +117,85 @@ pub enum TirError {
     PlaceholderViolation(String),
     #[error("placeholder {0} declares inconsistent preservation rules")]
     InconsistentPlaceholderRule(String),
+    #[error("unsupported translation document schema version {0}")]
+    UnsupportedTranslationDocumentSchema(u32),
+    #[error("translation document contains an invalid protected token at block {block}, inline {inline}")]
+    InvalidProtectedToken { block: usize, inline: usize },
+    #[error("translation document contains an invalid link at block {block}, inline {inline}")]
+    InvalidLink { block: usize, inline: usize },
+}
+
+impl TranslationDocumentV1 {
+    pub fn from_plain_text(text: &str) -> Self {
+        let blocks = text
+            .split("\n\n")
+            .map(|paragraph| TranslationBlock {
+                kind: TranslationBlockKind::Paragraph,
+                inlines: vec![TranslationInline::Text {
+                    text: paragraph.to_owned(),
+                    marks: Vec::new(),
+                }],
+            })
+            .collect();
+        Self {
+            schema_version: TRANSLATION_DOCUMENT_SCHEMA_VERSION,
+            blocks,
+        }
+    }
+
+    pub fn plain_text(&self) -> String {
+        self.blocks
+            .iter()
+            .map(|block| {
+                block
+                    .inlines
+                    .iter()
+                    .map(|inline| match inline {
+                        TranslationInline::Text { text, .. } => text.as_str(),
+                        TranslationInline::Protected { label, .. } => label.as_str(),
+                        TranslationInline::Placeholder { name, .. } => name.as_str(),
+                    })
+                    .collect::<String>()
+            })
+            .collect::<Vec<_>>()
+            .join("\n\n")
+    }
+
+    pub fn validate(&self) -> Result<(), TirError> {
+        if self.schema_version != TRANSLATION_DOCUMENT_SCHEMA_VERSION {
+            return Err(TirError::UnsupportedTranslationDocumentSchema(
+                self.schema_version,
+            ));
+        }
+        for (block_index, block) in self.blocks.iter().enumerate() {
+            for (inline_index, inline) in block.inlines.iter().enumerate() {
+                match inline {
+                    TranslationInline::Protected {
+                        token_id,
+                        signature,
+                        ..
+                    } if token_id.is_empty() || signature.is_empty() => {
+                        return Err(TirError::InvalidProtectedToken {
+                            block: block_index,
+                            inline: inline_index,
+                        });
+                    }
+                    TranslationInline::Text { marks, .. }
+                        if marks.iter().any(|mark| {
+                            matches!(mark, TextMark::Link { href } if href.trim().is_empty())
+                        }) =>
+                    {
+                        return Err(TirError::InvalidLink {
+                            block: block_index,
+                            inline: inline_index,
+                        });
+                    }
+                    _ => {}
+                }
+            }
+        }
+        Ok(())
+    }
 }
 
 impl UnitContent {
@@ -246,5 +372,29 @@ mod tests {
             validate_overlay(&source, &content(Vec::new())),
             Err(TirError::ProtectedSequenceChanged)
         );
+    }
+
+    #[test]
+    fn structured_translation_round_trips_and_projects_plain_text() {
+        let document = TranslationDocumentV1 {
+            schema_version: TRANSLATION_DOCUMENT_SCHEMA_VERSION,
+            blocks: vec![TranslationBlock {
+                kind: TranslationBlockKind::Paragraph,
+                inlines: vec![
+                    TranslationInline::Text {
+                        text: "Hello ".to_owned(),
+                        marks: vec![TextMark::Bold],
+                    },
+                    TranslationInline::Placeholder {
+                        name: "player".to_owned(),
+                        rule: "ExactlyOnce".to_owned(),
+                    },
+                ],
+            }],
+        };
+        document.validate().unwrap();
+        let bytes = serde_json::to_vec(&document).unwrap();
+        assert_eq!(serde_json::from_slice::<TranslationDocumentV1>(&bytes).unwrap(), document);
+        assert_eq!(document.plain_text(), "Hello player");
     }
 }

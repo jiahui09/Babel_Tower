@@ -1,0 +1,17 @@
+{
+  "title": "Settings",
+  "language": "Interface language",
+  "theme": "Theme",
+  "themeLight": "Light",
+  "themeDark": "Dark",
+  "themeSystem": "System",
+  "density": "Interface density",
+  "densityCompact": "Compact",
+  "densityComfortable": "Comfortable",
+  "editorFont": "Editor font",
+  "readingFontSize": "Reading size",
+  "lineHeight": "Line height",
+  "wordWrap": "Word wrap",
+  "shortcuts": "Keyboard shortcuts",
+  "panelWidths": "Panel widths"
+}

@@ -1,0 +1,11 @@
+{
+  "title": "Unable to complete the operation",
+  "unexpected": "An unexpected error occurred.",
+  "ipcUnavailable": "The desktop core is unavailable. Production mode does not show demo data.",
+  "notImplemented": "The desktop core does not provide this capability yet.",
+  "notFound": "The requested content no longer exists.",
+  "revisionConflict": "The translation revision conflicted. Your local input is preserved.",
+  "permissionDenied": "This resource is read only and cannot be changed.",
+  "bridgeUnavailable": "The desktop core is currently unavailable.",
+  "exportUnavailable": "The export command is not available from the desktop core yet."
+}

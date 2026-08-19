@@ -1,69 +1,194 @@
+import { useQuery, useQueryClient } from "@tanstack/react-query";
 import { createFileRoute } from "@tanstack/react-router";
-import { BookMarked, MessageSquareText } from "lucide-react";
-import { useEffect, useState } from "react";
+import { ChevronDown, ChevronUp } from "lucide-react";
+import { useEffect, useMemo, useRef, useState } from "react";
+import { useTranslation } from "react-i18next";
 
 import { TranslationEditor } from "../components/workbench/translation-editor";
-import { getWorkbenchSnapshot, saveTranslation, type UnitSummary } from "../lib/ipc";
+import { Button } from "../components/ui/button";
+import { plainTextDocument, useDesktopBridge, type UnitSummary } from "../platform/desktop-bridge";
+import { projectSnapshotQuery, workItemQuery } from "../queries/project";
+import { useWorkbenchStore } from "../stores/workbench";
 
-export const Route = createFileRoute("/projects/$projectId/content")({ component: LongFormPage });
+export const Route = createFileRoute("/projects/$projectId/content")({
+  validateSearch: (search: Record<string, unknown>) => ({
+    unitId: typeof search.unitId === "string" ? search.unitId : undefined,
+  }),
+  component: LongFormPage,
+});
 
 function LongFormPage() {
-  const [unit, setUnit] = useState<UnitSummary | null>(null);
+  const { projectId } = Route.useParams();
+  const { unitId: requestedUnitId } = Route.useSearch();
+  const { t } = useTranslation(["workbench", "editor", "common"]);
+  const bridge = useDesktopBridge();
+  const queryClient = useQueryClient();
+  const snapshot = useQuery(projectSnapshotQuery(bridge, projectId));
+  const [activeIndexOverride, setActiveIndexOverride] = useState<number | null>(null);
+  const markTabDirty = useWorkbenchStore((state) => state.markTabDirty);
+  const registerTabFlusher = useWorkbenchStore((state) => state.registerTabFlusher);
 
+  const units = useMemo(() => snapshot.data?.units ?? [], [snapshot.data?.units]);
+  const restoredIndex =
+    (requestedUnitId ?? snapshot.data?.navigation?.position.unitId)
+      ? units.findIndex(
+          (unit) => unit.unitId === (requestedUnitId ?? snapshot.data?.navigation?.position.unitId),
+        )
+      : -1;
+  const activeIndex = activeIndexOverride ?? (restoredIndex >= 0 ? restoredIndex : 0);
+  const activeUnit = units[activeIndex] ?? null;
+  const lastNavigationUnit = useRef<string | null>(null);
   useEffect(() => {
-    let active = true;
-    void getWorkbenchSnapshot()
-      .then((snapshot) => {
-        if (active) setUnit(snapshot.units[0] ?? null);
-      })
-      .catch(() => {
-        // Browser preview remains usable when Tauri IPC is unavailable.
-      });
-    return () => {
-      active = false;
-    };
-  }, []);
+    if (!snapshot.data || !activeUnit) return;
+    if (lastNavigationUnit.current === activeUnit.unitId) return;
+    lastNavigationUnit.current = activeUnit.unitId;
+    const previous = snapshot.data.navigation;
+    void bridge.saveNavigation({
+      projectId: snapshot.data.project.projectId,
+      view: "LongForm",
+      unitId: activeUnit.unitId,
+      scrollAnchorUnitId: activeUnit.unitId,
+      positionSequence: (previous?.positionSequence ?? 0) + 1,
+      clientSessionId: getClientSessionId(),
+      updatedAtMs: Date.now(),
+    });
+  }, [activeUnit, bridge, snapshot.data]);
+  const item = useQuery({
+    ...workItemQuery(bridge, projectId, activeUnit?.unitId ?? ""),
+    enabled: activeUnit !== null,
+  });
+  const windowedUnits = useMemo(
+    () => units.slice(Math.max(activeIndex - 2, 0), Math.min(activeIndex + 3, units.length)),
+    [activeIndex, units],
+  );
 
-  const sourceText =
-    unit?.sourceText ?? "The harbor lights were already fading when she unfolded the last letter.";
-  const translation = unit?.translation ?? "她展开最后一封信时，港口的灯火已经渐渐暗去。";
+  if (snapshot.isPending) return <CenteredMessage message={t("loading", { ns: "common" })} />;
+  if (snapshot.isError) return <CenteredMessage message={snapshot.error.message} error />;
+  if (units.length === 0) return <CenteredMessage message={t("emptyContent", { ns: "workbench" })} />;
+
+  const persist = async (document: Parameters<typeof bridge.saveTranslationDocument>[0]["document"]) => {
+    if (!activeUnit) return;
+    await bridge.saveTranslationDocument({
+      projectId,
+      unitId: activeUnit.unitId,
+      sourceUnitKey: activeUnit.sourceUnitKey,
+      commandId: crypto.randomUUID().replace(/-/g, ""),
+      expectedRevisionId: item.data?.revisionId ?? null,
+      document,
+      createdAtMs: Date.now(),
+    });
+    await Promise.all([
+      queryClient.invalidateQueries({ queryKey: ["project", projectId, "snapshot"] }),
+      queryClient.invalidateQueries({ queryKey: ["project", projectId, "work-item", activeUnit.unitId] }),
+    ]);
+  };
 
   return (
-    <div className="h-full overflow-auto">
-      <div className="mx-auto max-w-[920px] px-10 py-8">
-        <div className="mb-6 flex items-center gap-2 text-xs text-[var(--text-muted)]">
-          <BookMarked size={14} />
-          第一章 港口 · 第 {unit ? unit.localIndex + 1 : 18} 单元
-        </div>
-        <section aria-labelledby="source-heading" className="border-b border-[var(--border)] pb-6">
-          <h1 id="source-heading" className="m-0 mb-3 text-sm font-semibold text-[var(--text-secondary)]">
-            原文
-          </h1>
-          <p className="m-0 font-serif text-[17px] leading-8 text-[var(--text-secondary)]">{sourceText}</p>
-        </section>
-        <section aria-labelledby="translation-heading" className="pt-6">
-          <div className="flex items-center justify-between">
-            <h2 id="translation-heading" className="m-0 text-sm font-semibold">
-              译文
-            </h2>
-            <button className="flex h-8 items-center gap-1.5 rounded-[6px] px-2 text-xs text-[var(--text-secondary)] hover:bg-[var(--surface-inset)]">
-              <MessageSquareText size={15} />
-              批注
-            </button>
+    <div className="grid h-full min-h-0 grid-rows-[1fr_36px] bg-[var(--surface)]">
+      <div className="min-h-0 overflow-auto" aria-label={t("longForm", { ns: "workbench" })}>
+        <div className="mx-auto w-full max-w-[1500px] px-5 py-4">
+          <div className="sticky top-0 z-10 grid grid-cols-2 gap-4 border-b border-[var(--border)] bg-[var(--surface)] py-2 text-xs font-semibold text-[var(--text-secondary)]">
+            <span>{t("source", { ns: "editor" })}</span>
+            <span>{t("translation", { ns: "editor" })}</span>
           </div>
-          <TranslationEditor
-            initialText={translation}
-            onPersist={
-              unit ? (text) => saveTranslation(unit.sourceUnitKey, text).then(() => undefined) : undefined
-            }
-          />
-        </section>
-        <footer className="mt-10 flex justify-between border-t border-[var(--border)] pt-4 text-xs text-[var(--text-muted)]">
-          <span>上一段</span>
-          <span>18 / 42</span>
-          <span>下一段</span>
-        </footer>
+          <div className="divide-y divide-[var(--border)]">
+            {windowedUnits.map((unit) => (
+              <UnitRow
+                key={unit.unitId}
+                unit={unit}
+                active={unit.unitId === activeUnit?.unitId}
+                onActivate={() =>
+                  setActiveIndexOverride(units.findIndex((candidate) => candidate.unitId === unit.unitId))
+                }
+                editor={
+                  unit.unitId === activeUnit?.unitId && item.data ? (
+                    <TranslationEditor
+                      unitId={unit.unitId}
+                      document={item.data.translation ?? plainTextDocument(unit.translation ?? "")}
+                      onPersist={persist}
+                      onDirtyChange={(dirty) => markTabDirty("content", dirty)}
+                      registerFlush={(flusher) => registerTabFlusher("content", flusher)}
+                    />
+                  ) : null
+                }
+              />
+            ))}
+          </div>
+        </div>
       </div>
+      <footer className="flex items-center justify-center gap-3 border-t border-[var(--border)] bg-[var(--surface-raised)]">
+        <Button
+          variant="icon"
+          disabled={activeIndex === 0}
+          onClick={() => setActiveIndexOverride(Math.max(0, activeIndex - 1))}
+          aria-label={t("previousUnit", { ns: "editor" })}
+        >
+          <ChevronUp size={16} />
+        </Button>
+        <span className="min-w-[120px] text-center text-xs text-[var(--text-muted)]">
+          {t("unitPosition", { ns: "workbench", current: activeIndex + 1, total: units.length })}
+        </span>
+        <Button
+          variant="icon"
+          disabled={activeIndex >= units.length - 1}
+          onClick={() => setActiveIndexOverride(Math.min(units.length - 1, activeIndex + 1))}
+          aria-label={t("nextUnit", { ns: "editor" })}
+        >
+          <ChevronDown size={16} />
+        </Button>
+      </footer>
     </div>
   );
+}
+
+function UnitRow({
+  unit,
+  active,
+  onActivate,
+  editor,
+}: {
+  unit: UnitSummary;
+  active: boolean;
+  onActivate: () => void;
+  editor: React.ReactNode;
+}) {
+  return (
+    <article
+      className="grid min-h-[104px] grid-cols-2 gap-4 py-4 data-[active=true]:bg-[color-mix(in_srgb,var(--selection)_24%,transparent)]"
+      data-active={active}
+      onClick={onActivate}
+    >
+      <div className="px-2 font-[var(--editor-font)] text-[var(--editor-font-size)] leading-[var(--editor-line-height)] text-[var(--text-secondary)]">
+        {unit.sourceText}
+      </div>
+      <div className="min-w-0 px-2">
+        {active ? (
+          editor
+        ) : (
+          <p className="m-0 whitespace-pre-wrap font-[var(--editor-font)] text-[var(--editor-font-size)] leading-[var(--editor-line-height)]">
+            {unit.translation}
+          </p>
+        )}
+      </div>
+    </article>
+  );
+}
+
+function CenteredMessage({ message, error = false }: { message: string; error?: boolean }) {
+  return (
+    <div
+      className={`grid h-full place-items-center p-8 text-sm ${error ? "text-[var(--danger)]" : "text-[var(--text-muted)]"}`}
+    >
+      {message}
+    </div>
+  );
+}
+
+function getClientSessionId() {
+  const key = "babel-tower-client-session";
+  const existing = sessionStorage.getItem(key);
+  if (existing) return existing;
+  const created = crypto.randomUUID().replace(/-/g, "");
+  sessionStorage.setItem(key, created);
+  return created;
 }

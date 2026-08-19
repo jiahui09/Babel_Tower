@@ -1,0 +1,20 @@
+{
+  "title": "资源导航",
+  "resources": "资源",
+  "outline": "大纲",
+  "search": "搜索",
+  "searchHint": "输入至少两个字符搜索原文和译文",
+  "searching": "搜索中",
+  "noSearchResults": "没有匹配结果",
+  "source": "来源原件",
+  "workspace": "工作资料",
+  "derived": "派生资源",
+  "readonly": "只读",
+  "newFolder": "新建文件夹",
+  "rename": "重命名",
+  "move": "移动",
+  "delete": "移到回收区",
+  "restore": "恢复",
+  "reveal": "在文件管理器中显示",
+  "empty": "没有可显示的项目资源"
+}

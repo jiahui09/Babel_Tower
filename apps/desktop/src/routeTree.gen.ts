@@ -14,8 +14,10 @@ import { Route as ImportRouteImport } from './routes/import'
 import { Route as ProjectsProjectIdRouteImport } from './routes/projects.$projectId'
 import { Route as RecoveryProjectIdRouteImport } from './routes/recovery.$projectId'
 import { Route as ProjectsProjectIdContentRouteImport } from './routes/projects.$projectId.content'
+import { Route as ProjectsProjectIdDiffRouteImport } from './routes/projects.$projectId.diff'
 import { Route as ProjectsProjectIdExportsRouteImport } from './routes/projects.$projectId.exports'
 import { Route as ProjectsProjectIdResourcesRouteImport } from './routes/projects.$projectId.resources'
+import { Route as ProjectsProjectIdSourceRouteImport } from './routes/projects.$projectId.source'
 import { Route as ProjectsProjectIdUnitsRouteImport } from './routes/projects.$projectId.units'
 import { Route as ProjectsProjectIdValidateRouteImport } from './routes/projects.$projectId.validate'
 
@@ -45,6 +47,11 @@ const ProjectsProjectIdContentRoute =
     path: '/content',
     getParentRoute: () => ProjectsProjectIdRoute,
   } as any)
+const ProjectsProjectIdDiffRoute = ProjectsProjectIdDiffRouteImport.update({
+  id: '/diff',
+  path: '/diff',
+  getParentRoute: () => ProjectsProjectIdRoute,
+} as any)
 const ProjectsProjectIdExportsRoute =
   ProjectsProjectIdExportsRouteImport.update({
     id: '/exports',
@@ -57,6 +64,11 @@ const ProjectsProjectIdResourcesRoute =
     path: '/resources',
     getParentRoute: () => ProjectsProjectIdRoute,
   } as any)
+const ProjectsProjectIdSourceRoute = ProjectsProjectIdSourceRouteImport.update({
+  id: '/source',
+  path: '/source',
+  getParentRoute: () => ProjectsProjectIdRoute,
+} as any)
 const ProjectsProjectIdUnitsRoute = ProjectsProjectIdUnitsRouteImport.update({
   id: '/units',
   path: '/units',
@@ -75,8 +87,10 @@ export interface FileRoutesByFullPath {
   '/projects/$projectId': typeof ProjectsProjectIdRouteWithChildren
   '/recovery/$projectId': typeof RecoveryProjectIdRoute
   '/projects/$projectId/content': typeof ProjectsProjectIdContentRoute
+  '/projects/$projectId/diff': typeof ProjectsProjectIdDiffRoute
   '/projects/$projectId/exports': typeof ProjectsProjectIdExportsRoute
   '/projects/$projectId/resources': typeof ProjectsProjectIdResourcesRoute
+  '/projects/$projectId/source': typeof ProjectsProjectIdSourceRoute
   '/projects/$projectId/units': typeof ProjectsProjectIdUnitsRoute
   '/projects/$projectId/validate': typeof ProjectsProjectIdValidateRoute
 }
@@ -86,8 +100,10 @@ export interface FileRoutesByTo {
   '/projects/$projectId': typeof ProjectsProjectIdRouteWithChildren
   '/recovery/$projectId': typeof RecoveryProjectIdRoute
   '/projects/$projectId/content': typeof ProjectsProjectIdContentRoute
+  '/projects/$projectId/diff': typeof ProjectsProjectIdDiffRoute
   '/projects/$projectId/exports': typeof ProjectsProjectIdExportsRoute
   '/projects/$projectId/resources': typeof ProjectsProjectIdResourcesRoute
+  '/projects/$projectId/source': typeof ProjectsProjectIdSourceRoute
   '/projects/$projectId/units': typeof ProjectsProjectIdUnitsRoute
   '/projects/$projectId/validate': typeof ProjectsProjectIdValidateRoute
 }
@@ -98,8 +114,10 @@ export interface FileRoutesById {
   '/projects/$projectId': typeof ProjectsProjectIdRouteWithChildren
   '/recovery/$projectId': typeof RecoveryProjectIdRoute
   '/projects/$projectId/content': typeof ProjectsProjectIdContentRoute
+  '/projects/$projectId/diff': typeof ProjectsProjectIdDiffRoute
   '/projects/$projectId/exports': typeof ProjectsProjectIdExportsRoute
   '/projects/$projectId/resources': typeof ProjectsProjectIdResourcesRoute
+  '/projects/$projectId/source': typeof ProjectsProjectIdSourceRoute
   '/projects/$projectId/units': typeof ProjectsProjectIdUnitsRoute
   '/projects/$projectId/validate': typeof ProjectsProjectIdValidateRoute
 }
@@ -111,8 +129,10 @@ export interface FileRouteTypes {
     | '/projects/$projectId'
     | '/recovery/$projectId'
     | '/projects/$projectId/content'
+    | '/projects/$projectId/diff'
     | '/projects/$projectId/exports'
     | '/projects/$projectId/resources'
+    | '/projects/$projectId/source'
     | '/projects/$projectId/units'
     | '/projects/$projectId/validate'
   fileRoutesByTo: FileRoutesByTo
@@ -122,8 +142,10 @@ export interface FileRouteTypes {
     | '/projects/$projectId'
     | '/recovery/$projectId'
     | '/projects/$projectId/content'
+    | '/projects/$projectId/diff'
     | '/projects/$projectId/exports'
     | '/projects/$projectId/resources'
+    | '/projects/$projectId/source'
     | '/projects/$projectId/units'
     | '/projects/$projectId/validate'
   id:
@@ -133,8 +155,10 @@ export interface FileRouteTypes {
     | '/projects/$projectId'
     | '/recovery/$projectId'
     | '/projects/$projectId/content'
+    | '/projects/$projectId/diff'
     | '/projects/$projectId/exports'
     | '/projects/$projectId/resources'
+    | '/projects/$projectId/source'
     | '/projects/$projectId/units'
     | '/projects/$projectId/validate'
   fileRoutesById: FileRoutesById
@@ -183,6 +207,13 @@ declare module '@tanstack/react-router' {
       preLoaderRoute: typeof ProjectsProjectIdContentRouteImport
       parentRoute: typeof ProjectsProjectIdRoute
     }
+    '/projects/$projectId/diff': {
+      id: '/projects/$projectId/diff'
+      path: '/diff'
+      fullPath: '/projects/$projectId/diff'
+      preLoaderRoute: typeof ProjectsProjectIdDiffRouteImport
+      parentRoute: typeof ProjectsProjectIdRoute
+    }
     '/projects/$projectId/exports': {
       id: '/projects/$projectId/exports'
       path: '/exports'
@@ -195,6 +226,13 @@ declare module '@tanstack/react-router' {
       path: '/resources'
       fullPath: '/projects/$projectId/resources'
       preLoaderRoute: typeof ProjectsProjectIdResourcesRouteImport
+      parentRoute: typeof ProjectsProjectIdRoute
+    }
+    '/projects/$projectId/source': {
+      id: '/projects/$projectId/source'
+      path: '/source'
+      fullPath: '/projects/$projectId/source'
+      preLoaderRoute: typeof ProjectsProjectIdSourceRouteImport
       parentRoute: typeof ProjectsProjectIdRoute
     }
     '/projects/$projectId/units': {
@@ -216,16 +254,20 @@ declare module '@tanstack/react-router' {
 
 interface ProjectsProjectIdRouteChildren {
   ProjectsProjectIdContentRoute: typeof ProjectsProjectIdContentRoute
+  ProjectsProjectIdDiffRoute: typeof ProjectsProjectIdDiffRoute
   ProjectsProjectIdExportsRoute: typeof ProjectsProjectIdExportsRoute
   ProjectsProjectIdResourcesRoute: typeof ProjectsProjectIdResourcesRoute
+  ProjectsProjectIdSourceRoute: typeof ProjectsProjectIdSourceRoute
   ProjectsProjectIdUnitsRoute: typeof ProjectsProjectIdUnitsRoute
   ProjectsProjectIdValidateRoute: typeof ProjectsProjectIdValidateRoute
 }
 
 const ProjectsProjectIdRouteChildren: ProjectsProjectIdRouteChildren = {
   ProjectsProjectIdContentRoute: ProjectsProjectIdContentRoute,
+  ProjectsProjectIdDiffRoute: ProjectsProjectIdDiffRoute,
   ProjectsProjectIdExportsRoute: ProjectsProjectIdExportsRoute,
   ProjectsProjectIdResourcesRoute: ProjectsProjectIdResourcesRoute,
+  ProjectsProjectIdSourceRoute: ProjectsProjectIdSourceRoute,
   ProjectsProjectIdUnitsRoute: ProjectsProjectIdUnitsRoute,
   ProjectsProjectIdValidateRoute: ProjectsProjectIdValidateRoute,
 }

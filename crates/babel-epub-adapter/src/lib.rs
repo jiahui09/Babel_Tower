@@ -2,14 +2,14 @@
 
 use std::{
     collections::{HashMap, HashSet},
-    io::{Read, Seek, SeekFrom, Write},
+    io::{Cursor as IoCursor, Read, Seek, SeekFrom, Write},
     ops::Range,
     path::Path,
 };
 
 use babel_adapter_protocol::{
     ADAPTER_PROTOCOL_MAJOR, ADAPTER_PROTOCOL_MINOR, Adapter, AdapterError, AdapterManifest,
-    CapabilityIo, Cursor, ExecutionContext, ExportPlan, ExtractedUnit, InventoryItem,
+    CapabilityIo, Cursor, ExecutionContext, ExportPlan, ExtractedUnit, ImageOverlay, InventoryItem,
     MaterializeProgress, ObjectHandle, Operation, OverlayUnit, Page, ProbeResult, ProtocolRange,
     SafetyLimits, StagingHandle, VerificationReport,
 };
@@ -21,6 +21,7 @@ use babel_resource_graph::{
     EdgeKind, Locator, ResourceEdge, ResourceKind, ResourceNode, resource_key,
 };
 use babel_tir::{TIR_SCHEMA_VERSION, Token, UnitContent};
+use image::DynamicImage;
 use quick_xml::{Reader, XmlVersion, escape, events::Event};
 use sha2::{Digest, Sha256};
 use zip::{CompressionMethod, ZipArchive, ZipWriter, write::SimpleFileOptions};
@@ -403,6 +404,79 @@ impl Adapter for EpubAdapter {
             bytes_written: output_len,
             complete: true,
         })
+    }
+
+    fn apply_image_overlays(
+        &self,
+        _plan: &ExportPlan,
+        input: &ObjectHandle,
+        overlays: &[ImageOverlay],
+        staging: &StagingHandle,
+        io: &dyn CapabilityIo,
+        context: &ExecutionContext<'_>,
+    ) -> Result<(), AdapterError> {
+        let mut replacements = HashMap::<String, Vec<&ImageOverlay>>::new();
+        for overlay in overlays {
+            let Locator::ArchiveMemberByteSpan {
+                object_hash,
+                member_path,
+                ..
+            } = &overlay.source_locator
+            else {
+                return Err(invalid(
+                    "EPUB image overlay requires an archive member locator",
+                ));
+            };
+            if *object_hash != input.object_hash {
+                return Err(invalid(
+                    "EPUB image overlay references a different source object",
+                ));
+            }
+            let Locator::SpatialRegion { .. } = &overlay.region_locator else {
+                return Err(invalid(
+                    "EPUB image overlay requires a spatial region locator",
+                ));
+            };
+            replacements
+                .entry(member_path.clone())
+                .or_default()
+                .push(overlay);
+        }
+        let mut staging_reader = io.open_staging(staging)?;
+        let mut staging_bytes = Vec::new();
+        staging_reader.read_to_end(&mut staging_bytes)?;
+        let mut archive = ZipArchive::new(IoCursor::new(staging_bytes)).map_err(zip_input)?;
+        let output = io.open_staging_writer(staging)?;
+        let mut writer = ZipWriter::new(output);
+        let mut replaced = HashSet::new();
+        for index in 0..archive.len() {
+            context.checkpoint()?;
+            let mut entry = archive.by_index(index).map_err(zip_input)?;
+            let name = entry.name().to_owned();
+            let options = SimpleFileOptions::default()
+                .compression_method(entry.compression())
+                .last_modified_time(entry.last_modified().unwrap_or_default());
+            if let Some(overlays) = replacements.get(&name) {
+                let mut source_bytes = Vec::new();
+                entry.read_to_end(&mut source_bytes)?;
+                let bytes = compose_image_overlays(&source_bytes, overlays, io, context)?;
+                if bytes.is_empty() || bytes.len() as u64 > MAX_MEMBER_BYTES {
+                    return Err(AdapterError::BudgetExceeded);
+                }
+                writer.start_file(&name, options).map_err(zip_input)?;
+                writer.write_all(&bytes)?;
+                replaced.insert(name);
+            } else {
+                writer.raw_copy_file(entry).map_err(zip_input)?;
+            }
+        }
+        if replaced.len() != replacements.len() {
+            return Err(invalid(
+                "EPUB image overlay member is missing from the exported archive",
+            ));
+        }
+        writer.finish().map_err(zip_input)?;
+        Ok(())
     }
 
     fn verify_output(
@@ -1624,6 +1698,72 @@ fn invalid(message: impl Into<String>) -> AdapterError {
     AdapterError::InvalidInput(message.into())
 }
 
+fn compose_image_overlays(
+    source_bytes: &[u8],
+    overlays: &[&ImageOverlay],
+    io: &dyn CapabilityIo,
+    context: &ExecutionContext<'_>,
+) -> Result<Vec<u8>, AdapterError> {
+    let format = image::guess_format(source_bytes)
+        .map_err(|error| invalid(format!("EPUB image member format is unsupported: {error}")))?;
+    let mut composed = image::load_from_memory(source_bytes)
+        .map_err(|error| invalid(format!("EPUB image member cannot be decoded: {error}")))?
+        .to_rgba8();
+    for overlay in overlays {
+        context.checkpoint()?;
+        let Locator::SpatialRegion { polygon, .. } = &overlay.region_locator else {
+            return Err(invalid(
+                "EPUB image overlay requires a spatial region locator",
+            ));
+        };
+        let mut derived_bytes = Vec::new();
+        io.open_object(&overlay.derived_object)?
+            .read_to_end(&mut derived_bytes)?;
+        let derived = image::load_from_memory(&derived_bytes)
+            .map_err(|error| invalid(format!("derived image cannot be decoded: {error}")))?
+            .to_rgba8();
+        if derived.dimensions() != composed.dimensions() {
+            return Err(invalid(
+                "derived image dimensions do not match the source image",
+            ));
+        }
+        for y in 0..composed.height() {
+            for x in 0..composed.width() {
+                if point_in_polygon(x as f32 + 0.5, y as f32 + 0.5, polygon) {
+                    *composed.get_pixel_mut(x, y) = *derived.get_pixel(x, y);
+                }
+            }
+        }
+    }
+    let mut output = Vec::new();
+    DynamicImage::ImageRgba8(composed)
+        .write_to(&mut IoCursor::new(&mut output), format)
+        .map_err(|error| invalid(format!("composed image cannot be encoded: {error}")))?;
+    Ok(output)
+}
+
+fn point_in_polygon(x: f32, y: f32, polygon: &[[f32; 2]]) -> bool {
+    if polygon.len() < 3 {
+        return false;
+    }
+    let mut inside = false;
+    let mut previous = polygon.len() - 1;
+    for current in 0..polygon.len() {
+        let [current_x, current_y] = polygon[current];
+        let [previous_x, previous_y] = polygon[previous];
+        let crosses = (current_y > y) != (previous_y > y);
+        if crosses {
+            let intersection =
+                (previous_x - current_x) * (y - current_y) / (previous_y - current_y) + current_x;
+            if x < intersection {
+                inside = !inside;
+            }
+        }
+        previous = current;
+    }
+    inside
+}
+
 fn zip_input(error: zip::result::ZipError) -> AdapterError {
     invalid(format!("invalid EPUB ZIP container: {error}"))
 }
@@ -1726,6 +1866,78 @@ mod tests {
         let start = entry.data_start().unwrap() as usize;
         let end = start + entry.compressed_size() as usize;
         bytes[start..end].to_vec()
+    }
+
+    #[test]
+    fn image_overlays_compose_multiple_regions_in_stable_order() {
+        let encode = |pixels: [[u8; 4]; 2]| {
+            let mut bytes = Vec::new();
+            DynamicImage::ImageRgba8(
+                image::RgbaImage::from_raw(2, 1, pixels.into_iter().flatten().collect()).unwrap(),
+            )
+            .write_to(&mut IoCursor::new(&mut bytes), image::ImageFormat::Png)
+            .unwrap();
+            bytes
+        };
+        let source = encode([[255, 0, 0, 255], [255, 0, 0, 255]]);
+        let first = encode([[0, 255, 0, 255], [255, 0, 0, 255]]);
+        let second = encode([[255, 0, 0, 255], [0, 0, 255, 255]]);
+        let (temp, registry, _source_handle) = capability(&source);
+        let add_object = |bytes: &[u8]| {
+            let hash: [u8; 32] = Sha256::digest(bytes).into();
+            let encoded = hex::encode(hash);
+            let path = temp
+                .path()
+                .join("objects/sha256")
+                .join(&encoded[..2])
+                .join(&encoded[2..]);
+            fs::create_dir_all(path.parent().unwrap()).unwrap();
+            fs::write(path, bytes).unwrap();
+            registry.grant_object(hash, bytes.len() as u64).unwrap()
+        };
+        let first_handle = add_object(&first);
+        let second_handle = add_object(&second);
+        let token = CancellationToken::default();
+        let budget = budget();
+        let context = ExecutionContext::new(&budget, &token);
+        let source_hash: [u8; 32] = Sha256::digest(&source).into();
+        let first_overlay = ImageOverlay {
+            image_resource_id: ResourceId::from_bytes([1; 16]),
+            source_locator: Locator::ArchiveMemberByteSpan {
+                object_hash: source_hash,
+                member_path: "image.png".to_owned(),
+                start: 0,
+                end: source.len() as u64,
+            },
+            region_locator: Locator::SpatialRegion {
+                resource_id: ResourceId::from_bytes([1; 16]),
+                polygon: vec![[0.0, 0.0], [1.0, 0.0], [1.0, 1.0], [0.0, 1.0]],
+                coordinate_space: "pixel".to_owned(),
+            },
+            derived_object: first_handle,
+            media_type: "image/png".to_owned(),
+        };
+        let second_overlay = ImageOverlay {
+            image_resource_id: ResourceId::from_bytes([1; 16]),
+            source_locator: first_overlay.source_locator.clone(),
+            region_locator: Locator::SpatialRegion {
+                resource_id: ResourceId::from_bytes([2; 16]),
+                polygon: vec![[1.0, 0.0], [2.0, 0.0], [2.0, 1.0], [1.0, 1.0]],
+                coordinate_space: "pixel".to_owned(),
+            },
+            derived_object: second_handle,
+            media_type: "image/png".to_owned(),
+        };
+        let result = compose_image_overlays(
+            &source,
+            &[&first_overlay, &second_overlay],
+            &registry,
+            &context,
+        )
+        .unwrap();
+        let decoded = image::load_from_memory(&result).unwrap().to_rgba8();
+        assert_eq!(decoded.get_pixel(0, 0).0, [0, 255, 0, 255]);
+        assert_eq!(decoded.get_pixel(1, 0).0, [0, 0, 255, 255]);
     }
 
     fn capability(bytes: &[u8]) -> (TempDir, CapabilityRegistry, ObjectHandle) {

@@ -1,0 +1,16 @@
+{
+  "appName": "Babel Tower",
+  "loading": "Loading",
+  "retry": "Retry",
+  "cancel": "Cancel",
+  "confirm": "Confirm",
+  "close": "Close",
+  "save": "Save",
+  "search": "Search",
+  "settings": "Settings",
+  "back": "Back",
+  "notAvailable": "Not available",
+  "saved": "Saved",
+  "saving": "Saving",
+  "saveFailed": "Save failed"
+}

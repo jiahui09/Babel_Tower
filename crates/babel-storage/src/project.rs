@@ -55,6 +55,65 @@ pub struct ObjectRecord {
     pub media_type: String,
 }
 
+#[derive(Clone, Debug, PartialEq, Eq, Serialize, Deserialize)]
+pub struct SaveImageRegionEditRequest {
+    pub unit_id: [u8; 16],
+    pub generation_id: [u8; 16],
+    pub region_resource_id: [u8; 16],
+    pub command_id: [u8; 32],
+    pub corrected_source_text: Option<String>,
+    pub render_parameters_json: Vec<u8>,
+    pub derived_object_hash: Option<[u8; 32]>,
+    pub created_at_ms: i64,
+}
+
+#[derive(Clone, Debug, PartialEq, Eq, Serialize, Deserialize)]
+pub struct SaveOcrCandidateRequest {
+    pub generation_id: [u8; 16],
+    pub region_resource_id: [u8; 16],
+    pub model_hash: [u8; 32],
+    pub candidate_json: Vec<u8>,
+    pub created_at_ms: i64,
+}
+
+#[derive(Clone, Debug, PartialEq, Eq, Serialize, Deserialize)]
+pub struct OcrCandidateCacheRecord {
+    pub generation_id: [u8; 16],
+    pub region_resource_id: [u8; 16],
+    pub model_hash: [u8; 32],
+    pub candidate_json: Vec<u8>,
+    pub created_at_ms: i64,
+}
+
+#[derive(Clone, Debug, PartialEq, Eq, Serialize, Deserialize)]
+pub struct ImageRegionEditRecord {
+    pub revision_id: i64,
+    pub unit_id: [u8; 16],
+    pub generation_id: [u8; 16],
+    pub region_resource_id: [u8; 16],
+    pub corrected_source_text: Option<String>,
+    pub render_parameters_json: Vec<u8>,
+    pub derived_object_hash: Option<[u8; 32]>,
+    pub commit_sequence: i64,
+}
+
+#[derive(Clone, Debug, PartialEq, Eq, Serialize, Deserialize)]
+pub struct ImageExportOverlayRecord {
+    pub region_resource_id: [u8; 16],
+    pub image_resource_id: [u8; 16],
+    pub image_locator_json: Vec<u8>,
+    pub region_locator_json: Vec<u8>,
+    pub derived_object_hash: [u8; 32],
+    pub media_type: String,
+}
+
+#[derive(Clone, Debug, PartialEq, Eq)]
+pub struct MarkdownImageResourceRecord {
+    pub resource_id: [u8; 16],
+    pub semantic_path: String,
+    pub locator_json: Vec<u8>,
+}
+
 #[derive(Clone, Debug, PartialEq, Eq)]
 pub struct BackupPin {
     pub commit_sequence: i64,
@@ -93,6 +152,52 @@ pub struct DraftRecovery {
 pub struct NavigationSaveReceipt {
     pub position_sequence: u64,
     pub accepted: bool,
+}
+
+#[derive(Clone, Copy, Debug, PartialEq, Eq, Serialize, Deserialize)]
+pub enum WorkspaceOperationState {
+    Preparing,
+    Completed,
+    CancelledAfterCrash,
+    Failed,
+}
+
+#[derive(Clone, Debug, PartialEq, Eq, Serialize, Deserialize)]
+pub struct WorkspaceOperationRecord {
+    pub operation_id: String,
+    pub kind: String,
+    pub state: WorkspaceOperationState,
+    pub source_node_id: Option<String>,
+    pub target_node_id: Option<String>,
+    pub source_path: Option<String>,
+    pub target_path: Option<String>,
+    pub recycle_path: Option<String>,
+    pub commit_sequence: Option<i64>,
+    pub error: Option<String>,
+    pub created_at_ms: i64,
+    pub updated_at_ms: i64,
+    pub completed_at_ms: Option<i64>,
+}
+
+#[derive(Clone, Debug, PartialEq, Eq, Serialize, Deserialize)]
+pub struct RecordWorkspaceOperationRequest {
+    pub operation_id: String,
+    pub kind: String,
+    pub source_node_id: Option<String>,
+    pub target_node_id: Option<String>,
+    pub source_path: Option<String>,
+    pub target_path: Option<String>,
+    pub recycle_path: Option<String>,
+    pub created_at_ms: i64,
+}
+
+#[derive(Clone, Debug, PartialEq, Eq, Serialize, Deserialize)]
+pub struct FinishWorkspaceOperationRequest {
+    pub operation_id: String,
+    pub state: WorkspaceOperationState,
+    pub commit_sequence: Option<i64>,
+    pub error: Option<String>,
+    pub completed_at_ms: i64,
 }
 
 #[derive(Clone, Debug, PartialEq, Eq)]
@@ -423,6 +528,330 @@ impl ProjectStore {
         self.save_translation_with_hook(source_unit_key, command_id, text, created_at_ms, |_| {})
     }
 
+    pub fn save_translation_document(
+        &mut self,
+        source_unit_key: &[u8; 32],
+        command_id: &[u8; 32],
+        text: &str,
+        document_schema_version: i64,
+        document_json: &[u8],
+        expected_head_revision_id: Option<i64>,
+        created_at_ms: i64,
+    ) -> rusqlite::Result<SaveReceipt> {
+        self.save_translation_internal(
+            source_unit_key,
+            command_id,
+            text,
+            Some((document_schema_version, document_json)),
+            Some(expected_head_revision_id),
+            created_at_ms,
+            |_| {},
+        )
+    }
+
+    pub fn save_image_region_edit(
+        &mut self,
+        request: &SaveImageRegionEditRequest,
+    ) -> rusqlite::Result<SaveReceipt> {
+        let transaction = self
+            .connection
+            .transaction_with_behavior(TransactionBehavior::Immediate)?;
+        if let Some((revision_id, commit_sequence)) = transaction
+            .query_row(
+                "SELECT revision_id, commit_sequence
+                 FROM image_region_revision WHERE command_id = ?1",
+                [request.command_id.as_slice()],
+                |row| Ok((row.get(0)?, row.get(1)?)),
+            )
+            .optional()?
+        {
+            transaction.commit()?;
+            return Ok(SaveReceipt {
+                revision_id,
+                commit_sequence,
+                replayed: true,
+            });
+        }
+
+        let valid_region: bool = transaction.query_row(
+            "SELECT EXISTS(
+                SELECT 1
+                FROM import_generation generation
+                JOIN generation_unit unit
+                  ON unit.generation_id = generation.generation_id
+                JOIN generation_resource resource
+                  ON resource.generation_id = unit.generation_id
+                 AND resource.resource_id = unit.resource_id
+                WHERE generation.state = 'Active'
+                  AND generation.generation_id = ?1
+                  AND unit.unit_id = ?2
+                  AND resource.resource_id = ?3
+                  AND resource.kind = 'ImageRegion'
+             )",
+            params![
+                request.generation_id.as_slice(),
+                request.unit_id.as_slice(),
+                request.region_resource_id.as_slice()
+            ],
+            |row| row.get(0),
+        )?;
+        if !valid_region || request.render_parameters_json.is_empty() {
+            return Err(rusqlite::Error::InvalidQuery);
+        }
+        let commit_sequence: i64 = transaction.query_row(
+            "UPDATE project_state SET commit_sequence = commit_sequence + 1
+             WHERE singleton = 1 RETURNING commit_sequence",
+            [],
+            |row| row.get(0),
+        )?;
+        let parent_revision_id = transaction
+            .query_row(
+                "SELECT revision_id FROM image_region_head WHERE unit_id = ?1",
+                [request.unit_id.as_slice()],
+                |row| row.get::<_, i64>(0),
+            )
+            .optional()?;
+        transaction.execute(
+            "INSERT INTO image_region_revision(
+                unit_id, generation_id, region_resource_id, command_id, commit_sequence,
+                parent_revision_id, corrected_source_text, render_parameters_json,
+                derived_object_hash, created_at_ms
+             ) VALUES (?1, ?2, ?3, ?4, ?5, ?6, ?7, ?8, ?9, ?10)",
+            params![
+                request.unit_id.as_slice(),
+                request.generation_id.as_slice(),
+                request.region_resource_id.as_slice(),
+                request.command_id.as_slice(),
+                commit_sequence,
+                parent_revision_id,
+                request.corrected_source_text,
+                request.render_parameters_json,
+                request.derived_object_hash.map(|hash| hash.to_vec()),
+                request.created_at_ms
+            ],
+        )?;
+        let revision_id = transaction.last_insert_rowid();
+        transaction.execute(
+            "INSERT INTO image_region_head(unit_id, revision_id) VALUES (?1, ?2)
+             ON CONFLICT(unit_id) DO UPDATE SET revision_id = excluded.revision_id",
+            params![request.unit_id.as_slice(), revision_id],
+        )?;
+        transaction.commit()?;
+        Ok(SaveReceipt {
+            revision_id,
+            commit_sequence,
+            replayed: false,
+        })
+    }
+
+    pub fn save_ocr_candidate(
+        &mut self,
+        request: &SaveOcrCandidateRequest,
+    ) -> rusqlite::Result<bool> {
+        let document: babel_ocr::OcrDocument = serde_json::from_slice(&request.candidate_json)
+            .map_err(|_| rusqlite::Error::InvalidQuery)?;
+        document
+            .validate()
+            .map_err(|_| rusqlite::Error::InvalidQuery)?;
+        let transaction = self
+            .connection
+            .transaction_with_behavior(TransactionBehavior::Immediate)?;
+        if let Some(existing) = transaction
+            .query_row(
+                "SELECT candidate_json FROM image_region_ocr_cache
+                 WHERE generation_id = ?1 AND region_resource_id = ?2 AND model_hash = ?3",
+                params![
+                    request.generation_id.as_slice(),
+                    request.region_resource_id.as_slice(),
+                    request.model_hash.as_slice()
+                ],
+                |row| row.get::<_, Vec<u8>>(0),
+            )
+            .optional()?
+        {
+            if existing != request.candidate_json {
+                return Err(rusqlite::Error::InvalidQuery);
+            }
+            transaction.commit()?;
+            return Ok(true);
+        }
+        let valid_region: bool = transaction.query_row(
+            "SELECT EXISTS(
+                SELECT 1
+                FROM import_generation generation
+                JOIN generation_resource resource
+                  ON resource.generation_id = generation.generation_id
+                WHERE generation.state = 'Active'
+                  AND generation.generation_id = ?1
+                  AND resource.resource_id = ?2
+                  AND resource.kind = 'ImageRegion'
+             )",
+            params![
+                request.generation_id.as_slice(),
+                request.region_resource_id.as_slice()
+            ],
+            |row| row.get(0),
+        )?;
+        if !valid_region || request.model_hash == [0; 32] || request.candidate_json.is_empty() {
+            return Err(rusqlite::Error::InvalidQuery);
+        }
+        transaction.execute(
+            "INSERT INTO image_region_ocr_cache(
+                generation_id, region_resource_id, model_hash, candidate_json, created_at_ms
+             ) VALUES (?1, ?2, ?3, ?4, ?5)",
+            params![
+                request.generation_id.as_slice(),
+                request.region_resource_id.as_slice(),
+                request.model_hash.as_slice(),
+                request.candidate_json,
+                request.created_at_ms
+            ],
+        )?;
+        transaction.commit()?;
+        Ok(false)
+    }
+
+    pub fn ocr_candidate(
+        &self,
+        generation_id: &[u8; 16],
+        region_resource_id: &[u8; 16],
+        model_hash: &[u8; 32],
+    ) -> rusqlite::Result<Option<OcrCandidateCacheRecord>> {
+        self.connection
+            .query_row(
+                "SELECT generation_id, region_resource_id, model_hash,
+                        candidate_json, created_at_ms
+                 FROM image_region_ocr_cache
+                 WHERE generation_id = ?1 AND region_resource_id = ?2 AND model_hash = ?3",
+                params![
+                    generation_id.as_slice(),
+                    region_resource_id.as_slice(),
+                    model_hash.as_slice()
+                ],
+                |row| {
+                    Ok(OcrCandidateCacheRecord {
+                        generation_id: vec_to_array(row.get(0)?)?,
+                        region_resource_id: vec_to_array(row.get(1)?)?,
+                        model_hash: vec_to_array(row.get(2)?)?,
+                        candidate_json: row.get(3)?,
+                        created_at_ms: row.get(4)?,
+                    })
+                },
+            )
+            .optional()
+    }
+
+    pub fn image_region_edit(
+        &self,
+        unit_id: &[u8; 16],
+    ) -> rusqlite::Result<Option<ImageRegionEditRecord>> {
+        self.connection
+            .query_row(
+                "SELECT revision.revision_id, revision.unit_id, revision.generation_id,
+                        revision.region_resource_id, revision.corrected_source_text,
+                        revision.render_parameters_json, revision.derived_object_hash,
+                        revision.commit_sequence
+                 FROM image_region_head head
+                 JOIN image_region_revision revision ON revision.revision_id = head.revision_id
+                 WHERE head.unit_id = ?1",
+                [unit_id.as_slice()],
+                |row| {
+                    let optional_hash = row
+                        .get::<_, Option<Vec<u8>>>(6)?
+                        .map(vec_to_array)
+                        .transpose()?;
+                    Ok(ImageRegionEditRecord {
+                        revision_id: row.get(0)?,
+                        unit_id: vec_to_array(row.get(1)?)?,
+                        generation_id: vec_to_array(row.get(2)?)?,
+                        region_resource_id: vec_to_array(row.get(3)?)?,
+                        corrected_source_text: row.get(4)?,
+                        render_parameters_json: row.get(5)?,
+                        derived_object_hash: optional_hash,
+                        commit_sequence: row.get(7)?,
+                    })
+                },
+            )
+            .optional()
+    }
+
+    pub fn image_export_overlays(
+        &self,
+        generation_id: &[u8; 16],
+        frozen_commit_sequence: i64,
+    ) -> rusqlite::Result<Vec<ImageExportOverlayRecord>> {
+        let mut statement = self.connection.prepare_cached(
+            "SELECT revision.region_resource_id, image.resource_id,
+                    image.locator_json, region.locator_json,
+                    revision.derived_object_hash,
+                    COALESCE(object.media_type, 'image/png')
+             FROM image_region_revision revision
+             JOIN generation_resource region
+               ON region.generation_id = revision.generation_id
+              AND region.resource_id = revision.region_resource_id
+              AND region.kind = 'ImageRegion'
+             JOIN generation_edge edge
+               ON edge.generation_id = revision.generation_id
+              AND edge.from_resource_id = revision.region_resource_id
+              AND edge.edge_kind = 'RegionOf'
+             JOIN generation_resource image
+               ON image.generation_id = edge.generation_id
+              AND image.resource_id = edge.to_resource_id
+              AND image.kind = 'Image'
+             LEFT JOIN object_record object
+               ON object.object_hash = revision.derived_object_hash
+             WHERE revision.generation_id = ?1
+               AND revision.commit_sequence <= ?2
+               AND revision.revision_id = (
+                    SELECT candidate.revision_id
+                    FROM image_region_revision candidate
+                    WHERE candidate.unit_id = revision.unit_id
+                      AND candidate.generation_id = revision.generation_id
+                      AND candidate.commit_sequence <= ?2
+                    ORDER BY candidate.commit_sequence DESC
+                    LIMIT 1
+               )
+               AND revision.derived_object_hash IS NOT NULL
+             ORDER BY revision.region_resource_id",
+        )?;
+        statement
+            .query_map(
+                params![generation_id.as_slice(), frozen_commit_sequence],
+                |row| {
+                    Ok(ImageExportOverlayRecord {
+                        region_resource_id: vec_to_array(row.get(0)?)?,
+                        image_resource_id: vec_to_array(row.get(1)?)?,
+                        image_locator_json: row.get(2)?,
+                        region_locator_json: row.get(3)?,
+                        derived_object_hash: vec_to_array(row.get(4)?)?,
+                        media_type: row.get(5)?,
+                    })
+                },
+            )?
+            .collect()
+    }
+
+    pub fn markdown_image_resources(
+        &self,
+        generation_id: &[u8; 16],
+    ) -> rusqlite::Result<Vec<MarkdownImageResourceRecord>> {
+        let mut statement = self.connection.prepare_cached(
+            "SELECT resource_id, semantic_path, locator_json
+             FROM generation_resource
+             WHERE generation_id = ?1 AND kind = 'Image'
+             ORDER BY semantic_path, resource_id",
+        )?;
+        statement
+            .query_map([generation_id.as_slice()], |row| {
+                Ok(MarkdownImageResourceRecord {
+                    resource_id: vec_to_array(row.get(0)?)?,
+                    semantic_path: row.get(1)?,
+                    locator_json: row.get(2)?,
+                })
+            })?
+            .collect()
+    }
+
     pub fn save_navigation_position(
         &mut self,
         position: &NavigationPosition,
@@ -508,6 +937,30 @@ impl ProjectStore {
         command_id: &[u8; 32],
         text: &str,
         created_at_ms: i64,
+        hook: F,
+    ) -> rusqlite::Result<SaveReceipt>
+    where
+        F: FnMut(SavePoint),
+    {
+        self.save_translation_internal(
+            source_unit_key,
+            command_id,
+            text,
+            None,
+            None,
+            created_at_ms,
+            hook,
+        )
+    }
+
+    fn save_translation_internal<F>(
+        &mut self,
+        source_unit_key: &[u8; 32],
+        command_id: &[u8; 32],
+        text: &str,
+        document: Option<(i64, &[u8])>,
+        expected_head: Option<Option<i64>>,
+        created_at_ms: i64,
         mut hook: F,
     ) -> rusqlite::Result<SaveReceipt>
     where
@@ -537,12 +990,6 @@ impl ProjectStore {
             [source_unit_key.as_slice()],
             |row| row.get::<_, Vec<u8>>(0),
         )?;
-        let commit_sequence: i64 = transaction.query_row(
-            "UPDATE project_state SET commit_sequence = commit_sequence + 1
-             WHERE singleton = 1 RETURNING commit_sequence",
-            [],
-            |row| row.get(0),
-        )?;
         let parent_revision_id = transaction
             .query_row(
                 "SELECT revision_id FROM unit_head WHERE unit_id = ?1",
@@ -550,17 +997,32 @@ impl ProjectStore {
                 |row| row.get::<_, i64>(0),
             )
             .optional()?;
+        if expected_head.is_some_and(|expected| expected != parent_revision_id) {
+            return Err(rusqlite::Error::InvalidQuery);
+        }
+        let commit_sequence: i64 = transaction.query_row(
+            "UPDATE project_state SET commit_sequence = commit_sequence + 1
+             WHERE singleton = 1 RETURNING commit_sequence",
+            [],
+            |row| row.get(0),
+        )?;
+        let (document_schema_version, document_json) = document
+            .map(|(schema_version, json)| (Some(schema_version), Some(json)))
+            .unwrap_or((None, None));
         transaction.execute(
             "INSERT INTO translation_revision (
-                unit_id, command_id, commit_sequence, parent_revision_id, text, created_at_ms
-             ) VALUES (?1, ?2, ?3, ?4, ?5, ?6)",
+                unit_id, command_id, commit_sequence, parent_revision_id, text, created_at_ms,
+                document_schema_version, document_json
+             ) VALUES (?1, ?2, ?3, ?4, ?5, ?6, ?7, ?8)",
             params![
                 unit_id.as_slice(),
                 command_id.as_slice(),
                 commit_sequence,
                 parent_revision_id,
                 text,
-                created_at_ms
+                created_at_ms,
+                document_schema_version,
+                document_json,
             ],
         )?;
         let revision_id = transaction.last_insert_rowid();
@@ -636,11 +1098,17 @@ impl ProjectStore {
         if current_head != expected_head_revision_id {
             return Err(rusqlite::Error::InvalidQuery);
         }
-        let restored_text = transaction.query_row(
-            "SELECT text FROM translation_revision
+        let (restored_text, restored_document_schema_version, restored_document_json) = transaction.query_row(
+            "SELECT text, document_schema_version, document_json FROM translation_revision
              WHERE revision_id = ?1 AND unit_id = ?2",
             params![restores_revision_id, unit_id.as_slice()],
-            |row| row.get::<_, String>(0),
+            |row| {
+                Ok((
+                    row.get::<_, String>(0)?,
+                    row.get::<_, Option<i64>>(1)?,
+                    row.get::<_, Option<Vec<u8>>>(2)?,
+                ))
+            },
         )?;
         let commit_sequence: i64 = transaction.query_row(
             "UPDATE project_state SET commit_sequence = commit_sequence + 1
@@ -651,8 +1119,9 @@ impl ProjectStore {
         transaction.execute(
             "INSERT INTO translation_revision(
                 unit_id, command_id, commit_sequence, parent_revision_id, text,
-                created_at_ms, revision_kind, restores_revision_id
-             ) VALUES (?1, ?2, ?3, ?4, ?5, ?6, ?7, ?8)",
+                created_at_ms, revision_kind, restores_revision_id,
+                document_schema_version, document_json
+             ) VALUES (?1, ?2, ?3, ?4, ?5, ?6, ?7, ?8, ?9, ?10)",
             params![
                 unit_id.as_slice(),
                 command_id.as_slice(),
@@ -661,7 +1130,9 @@ impl ProjectStore {
                 restored_text,
                 created_at_ms,
                 kind.as_str(),
-                restores_revision_id
+                restores_revision_id,
+                restored_document_schema_version,
+                restored_document_json,
             ],
         )?;
         let revision_id = transaction.last_insert_rowid();
@@ -700,6 +1171,70 @@ impl ProjectStore {
             commit_sequence,
             replayed: false,
         })
+    }
+
+    pub fn undo_translation(
+        &mut self,
+        unit_id: &[u8; 16],
+        command_id: &[u8; 32],
+        created_at_ms: i64,
+    ) -> rusqlite::Result<SaveReceipt> {
+        let (source_unit_key, current_head, target_revision): (Vec<u8>, i64, Option<i64>) =
+            self.connection.query_row(
+                "SELECT unit.source_unit_key, head.revision_id, revision.parent_revision_id
+                 FROM unit_head head
+                 JOIN unit ON unit.unit_id = head.unit_id
+                 JOIN translation_revision revision ON revision.revision_id = head.revision_id
+                 WHERE head.unit_id = ?1",
+                [unit_id.as_slice()],
+                |row| Ok((row.get(0)?, row.get(1)?, row.get(2)?)),
+            )?;
+        let target_revision = target_revision.ok_or(rusqlite::Error::InvalidQuery)?;
+        self.restore_translation(
+            source_unit_key
+                .as_slice()
+                .try_into()
+                .map_err(|_| rusqlite::Error::InvalidQuery)?,
+            command_id,
+            current_head,
+            target_revision,
+            RevisionKind::Undo,
+            created_at_ms,
+        )
+    }
+
+    pub fn redo_translation(
+        &mut self,
+        unit_id: &[u8; 16],
+        command_id: &[u8; 32],
+        created_at_ms: i64,
+    ) -> rusqlite::Result<SaveReceipt> {
+        let (source_unit_key, current_head, target_revision, revision_kind):
+            (Vec<u8>, i64, Option<i64>, String) = self.connection.query_row(
+            "SELECT unit.source_unit_key, head.revision_id, revision.parent_revision_id,
+                    revision.revision_kind
+             FROM unit_head head
+             JOIN unit ON unit.unit_id = head.unit_id
+             JOIN translation_revision revision ON revision.revision_id = head.revision_id
+             WHERE head.unit_id = ?1",
+            [unit_id.as_slice()],
+            |row| Ok((row.get(0)?, row.get(1)?, row.get(2)?, row.get(3)?)),
+        )?;
+        if revision_kind != RevisionKind::Undo.as_str() {
+            return Err(rusqlite::Error::InvalidQuery);
+        }
+        let target_revision = target_revision.ok_or(rusqlite::Error::InvalidQuery)?;
+        self.restore_translation(
+            source_unit_key
+                .as_slice()
+                .try_into()
+                .map_err(|_| rusqlite::Error::InvalidQuery)?,
+            command_id,
+            current_head,
+            target_revision,
+            RevisionKind::Redo,
+            created_at_ms,
+        )
     }
 
     pub fn upsert_term(&mut self, request: &UpsertTermRequest) -> rusqlite::Result<()> {
@@ -1293,6 +1828,116 @@ impl ProjectStore {
              WHERE state = 'Running'",
             [recovered_at_ms],
         )
+    }
+
+    pub fn record_workspace_operation(
+        &self,
+        request: &RecordWorkspaceOperationRequest,
+    ) -> rusqlite::Result<()> {
+        self.connection.execute(
+            "INSERT INTO workspace_operation_log(
+                operation_id, kind, state, source_node_id, target_node_id,
+                source_path, target_path, recycle_path, created_at_ms, updated_at_ms
+             ) VALUES (?1, ?2, 'Preparing', ?3, ?4, ?5, ?6, ?7, ?8, ?8)",
+            params![
+                request.operation_id,
+                request.kind,
+                request.source_node_id,
+                request.target_node_id,
+                request.source_path,
+                request.target_path,
+                request.recycle_path,
+                request.created_at_ms
+            ],
+        )?;
+        Ok(())
+    }
+
+    pub fn finish_workspace_operation(
+        &self,
+        request: &FinishWorkspaceOperationRequest,
+    ) -> rusqlite::Result<()> {
+        self.connection.execute(
+            "UPDATE workspace_operation_log
+             SET state = ?2,
+                 commit_sequence = ?3,
+                 error = ?4,
+                 updated_at_ms = ?5,
+                 completed_at_ms = ?5
+             WHERE operation_id = ?1",
+            params![
+                request.operation_id,
+                workspace_operation_state_name(request.state),
+                request.commit_sequence,
+                request.error,
+                request.completed_at_ms
+            ],
+        )?;
+        Ok(())
+    }
+
+    pub fn complete_workspace_operation(
+        &mut self,
+        operation_id: &str,
+        completed_at_ms: i64,
+    ) -> rusqlite::Result<i64> {
+        let transaction = self
+            .connection
+            .transaction_with_behavior(TransactionBehavior::Immediate)?;
+        let commit_sequence: i64 = transaction.query_row(
+            "UPDATE project_state SET commit_sequence = commit_sequence + 1
+             WHERE singleton = 1 RETURNING commit_sequence",
+            [],
+            |row| row.get(0),
+        )?;
+        let changed = transaction.execute(
+            "UPDATE workspace_operation_log
+             SET state = 'Completed',
+                 commit_sequence = ?2,
+                 error = NULL,
+                 updated_at_ms = ?3,
+                 completed_at_ms = ?3
+             WHERE operation_id = ?1 AND state = 'Preparing'",
+            params![operation_id, commit_sequence, completed_at_ms],
+        )?;
+        if changed != 1 {
+            return Err(rusqlite::Error::InvalidQuery);
+        }
+        transaction.commit()?;
+        Ok(commit_sequence)
+    }
+
+    pub fn workspace_operations_in_state(
+        &self,
+        state: WorkspaceOperationState,
+    ) -> rusqlite::Result<Vec<WorkspaceOperationRecord>> {
+        let mut statement = self.connection.prepare_cached(
+            "SELECT operation_id, kind, state, source_node_id, target_node_id,
+                    source_path, target_path, recycle_path, commit_sequence, error,
+                    created_at_ms, updated_at_ms, completed_at_ms
+             FROM workspace_operation_log
+             WHERE state = ?1
+             ORDER BY created_at_ms, operation_id",
+        )?;
+        statement
+            .query_map([workspace_operation_state_name(state)], |row| {
+                Ok(WorkspaceOperationRecord {
+                    operation_id: row.get(0)?,
+                    kind: row.get(1)?,
+                    state: workspace_operation_state_from_name(&row.get::<_, String>(2)?)?,
+                    source_node_id: row.get(3)?,
+                    target_node_id: row.get(4)?,
+                    source_path: row.get(5)?,
+                    target_path: row.get(6)?,
+                    recycle_path: row.get(7)?,
+                    commit_sequence: row.get(8)?,
+                    error: row.get(9)?,
+                    created_at_ms: row.get(10)?,
+                    updated_at_ms: row.get(11)?,
+                    completed_at_ms: row.get(12)?,
+                })
+            })?
+            .collect()
     }
 
     pub fn transition_task(
@@ -2262,6 +2907,25 @@ fn priority_number(priority: WorkPriority) -> i64 {
     }
 }
 
+fn workspace_operation_state_name(state: WorkspaceOperationState) -> &'static str {
+    match state {
+        WorkspaceOperationState::Preparing => "Preparing",
+        WorkspaceOperationState::Completed => "Completed",
+        WorkspaceOperationState::CancelledAfterCrash => "CancelledAfterCrash",
+        WorkspaceOperationState::Failed => "Failed",
+    }
+}
+
+fn workspace_operation_state_from_name(value: &str) -> rusqlite::Result<WorkspaceOperationState> {
+    match value {
+        "Preparing" => Ok(WorkspaceOperationState::Preparing),
+        "Completed" => Ok(WorkspaceOperationState::Completed),
+        "CancelledAfterCrash" => Ok(WorkspaceOperationState::CancelledAfterCrash),
+        "Failed" => Ok(WorkspaceOperationState::Failed),
+        _ => Err(rusqlite::Error::InvalidQuery),
+    }
+}
+
 fn parse_priority(value: i64) -> rusqlite::Result<WorkPriority> {
     match value {
         0 => Ok(WorkPriority::P0Interactive),
@@ -2408,6 +3072,103 @@ mod tests {
         assert!(store.search("人工译文", 10).unwrap().is_empty());
         assert_eq!(store.flush_search_dirty(100).unwrap(), 1);
         assert_eq!(store.search("人工译文", 10).unwrap().len(), 1);
+    }
+
+    #[test]
+    fn structured_translation_preserves_text_projection_and_checks_revision() {
+        let temp = TempDir::new().unwrap();
+        let mut store = ProjectStore::open(temp.path().join("project.sqlite3")).unwrap();
+        store.seed_units(1).unwrap();
+        let source_key: [u8; 32] = store.page_after(-1, 1).unwrap()[0]
+            .source_unit_key
+            .clone()
+            .try_into()
+            .unwrap();
+        let document = br#"{"schemaVersion":1,"blocks":[]}"#;
+
+        let first = store
+            .save_translation_document(&source_key, &[31; 32], "plain projection", 1, document, None, 1)
+            .unwrap();
+        let stored: (String, i64, Vec<u8>) = store
+            .connection
+            .query_row(
+                "SELECT text, document_schema_version, document_json
+                 FROM translation_revision WHERE revision_id = ?1",
+                [first.revision_id],
+                |row| Ok((row.get(0)?, row.get(1)?, row.get(2)?)),
+            )
+            .unwrap();
+        assert_eq!(stored, ("plain projection".to_owned(), 1, document.to_vec()));
+
+        let sequence_before_conflict = store.commit_sequence().unwrap();
+        assert!(
+            store
+                .save_translation_document(
+                    &source_key,
+                    &[32; 32],
+                    "stale",
+                    1,
+                    document,
+                    None,
+                    2,
+                )
+                .is_err()
+        );
+        assert_eq!(store.commit_sequence().unwrap(), sequence_before_conflict);
+    }
+
+    #[test]
+    fn undo_and_redo_restore_structured_documents_with_the_text_projection() {
+        let temp = TempDir::new().unwrap();
+        let mut store = ProjectStore::open(temp.path().join("project.sqlite3")).unwrap();
+        store.seed_units(1).unwrap();
+        let unit = store.page_after(-1, 1).unwrap().remove(0);
+        let unit_id: [u8; 16] = unit.unit_id.try_into().unwrap();
+        let source_key: [u8; 32] = unit.source_unit_key.try_into().unwrap();
+        let first_document = br#"{"schemaVersion":1,"blocks":[{"kind":"paragraph","inlines":[]}] }"#;
+        let second_document = br#"{"schemaVersion":1,"blocks":[{"kind":"heading","inlines":[]}] }"#;
+        let first = store
+            .save_translation_document(&source_key, &[41; 32], "first", 1, first_document, None, 1)
+            .unwrap();
+        store
+            .save_translation_document(
+                &source_key,
+                &[42; 32],
+                "second",
+                1,
+                second_document,
+                Some(first.revision_id),
+                2,
+            )
+            .unwrap();
+
+        store.undo_translation(&unit_id, &[43; 32], 3).unwrap();
+        let undone: (String, Vec<u8>) = store
+            .connection
+            .query_row(
+                "SELECT revision.text, revision.document_json
+                 FROM unit_head head
+                 JOIN translation_revision revision ON revision.revision_id = head.revision_id
+                 WHERE head.unit_id = ?1",
+                [unit_id.as_slice()],
+                |row| Ok((row.get(0)?, row.get(1)?)),
+            )
+            .unwrap();
+        assert_eq!(undone, ("first".to_owned(), first_document.to_vec()));
+
+        store.redo_translation(&unit_id, &[44; 32], 4).unwrap();
+        let redone: (String, Vec<u8>) = store
+            .connection
+            .query_row(
+                "SELECT revision.text, revision.document_json
+                 FROM unit_head head
+                 JOIN translation_revision revision ON revision.revision_id = head.revision_id
+                 WHERE head.unit_id = ?1",
+                [unit_id.as_slice()],
+                |row| Ok((row.get(0)?, row.get(1)?)),
+            )
+            .unwrap();
+        assert_eq!(redone, ("second".to_owned(), second_document.to_vec()));
     }
 
     #[test]
@@ -2923,6 +3684,130 @@ mod tests {
             .unwrap();
         assert!(store.seal_generation(&incomplete_generation).is_err());
         assert_eq!(store.active_generation().unwrap(), Some(generation_id));
+    }
+
+    #[test]
+    fn image_region_edits_are_revisioned_idempotent_and_separate_from_ocr_cache() {
+        let temp = TempDir::new().unwrap();
+        let mut store = ProjectStore::open(temp.path().join("project.sqlite3")).unwrap();
+        let generation_id = [31; 16];
+        let region_id = [32; 16];
+        let extracted_unit_id = [33; 16];
+        store
+            .begin_generation(&generation_descriptor(generation_id))
+            .unwrap();
+        let candidates = serde_json::to_vec(&Vec::<[u8; 16]>::new()).unwrap();
+        let batch = GenerationBatch {
+            resources: vec![GenerationResourceRecord {
+                resource_id: region_id,
+                resource_key: [34; 32],
+                kind: "ImageRegion".to_owned(),
+                semantic_path: "images/page.png#region-1".to_owned(),
+                locator_json: br#"{"SpatialRegion":{"polygon":[[1,1],[8,1],[8,6]],"coordinate_space":"pixel"}}"#.to_vec(),
+            }],
+            units: vec![GenerationUnitRecord {
+                extracted_unit_id,
+                source_unit_key: [35; 32],
+                resource_id: region_id,
+                locator_json: br#"{"SpatialRegion":{"polygon":[[1,1],[8,1],[8,6]],"coordinate_space":"pixel"}}"#.to_vec(),
+                tir_json: br#"{"schema_version":1,"tokens":[{"Text":{"text":"recognized","style_hint":null}}]}"#.to_vec(),
+                reading_order: 0,
+            }],
+            bindings: vec![GenerationBindingRecord {
+                binding_id: [36; 16],
+                extracted_unit_id,
+                disposition: "Orphaned".to_owned(),
+                selected_unit_id: None,
+                policy_version: 1,
+                candidates_hash: candidate_set_hash(&candidates),
+                candidates_json: candidates,
+            }],
+            ..GenerationBatch::default()
+        };
+        store
+            .append_generation_batch(&generation_id, &[37; 32], &[38; 32], &batch)
+            .unwrap();
+        store.seal_generation(&generation_id).unwrap();
+        store.activate_generation(&generation_id, 2).unwrap();
+        let unit_id = store.generation_units(&generation_id).unwrap()[0].unit_id;
+        let request = SaveImageRegionEditRequest {
+            unit_id,
+            generation_id,
+            region_resource_id: region_id,
+            command_id: [39; 32],
+            corrected_source_text: Some("human correction".to_owned()),
+            render_parameters_json: br#"{"schema_version":1}"#.to_vec(),
+            derived_object_hash: None,
+            created_at_ms: 3,
+        };
+        let first = store.save_image_region_edit(&request).unwrap();
+        let replay = store.save_image_region_edit(&request).unwrap();
+        assert!(!first.replayed);
+        assert!(replay.replayed);
+        assert_eq!(first.revision_id, replay.revision_id);
+        let saved = store.image_region_edit(&unit_id).unwrap().unwrap();
+        assert_eq!(
+            saved.corrected_source_text.as_deref(),
+            Some("human correction")
+        );
+        assert_eq!(saved.region_resource_id, region_id);
+        let ocr_rows: i64 = store
+            .connection()
+            .query_row("SELECT count(*) FROM image_region_ocr_cache", [], |row| {
+                row.get(0)
+            })
+            .unwrap();
+        assert_eq!(ocr_rows, 0);
+
+        let candidate_json = serde_json::to_vec(&babel_ocr::OcrDocument {
+            schema_version: babel_ocr::OCR_DOCUMENT_SCHEMA_VERSION,
+            source_hash_hex: "11".repeat(32),
+            input_kind: babel_ocr::OcrInputKind::Image,
+            profile: babel_ocr::OcrProfile::default(),
+            engine: babel_ocr::OcrEngineDescriptor {
+                engine_id: "test-engine".to_owned(),
+                engine_version: "1".to_owned(),
+                runtime: "test-runtime".to_owned(),
+                runtime_version: "1".to_owned(),
+                model_ids: vec!["model".to_owned()],
+            },
+            pages: vec![babel_ocr::OcrPage {
+                page_index: 0,
+                width: 100,
+                height: 100,
+                regions: vec![babel_ocr::OcrRegion {
+                    reading_order: 0,
+                    polygon: vec![
+                        babel_ocr::OcrPoint { x: 1.0, y: 1.0 },
+                        babel_ocr::OcrPoint { x: 9.0, y: 1.0 },
+                        babel_ocr::OcrPoint { x: 9.0, y: 9.0 },
+                    ],
+                    block_type: babel_ocr::OcrBlockType::Text,
+                    language: Some("en".to_owned()),
+                    text: "recognized".to_owned(),
+                    normalized_text: "recognized".to_owned(),
+                    confidence_millionths: 900_000,
+                }],
+            }],
+        })
+        .unwrap();
+        let cache_request = SaveOcrCandidateRequest {
+            generation_id,
+            region_resource_id: region_id,
+            model_hash: [40; 32],
+            candidate_json: candidate_json.clone(),
+            created_at_ms: 4,
+        };
+        assert!(!store.save_ocr_candidate(&cache_request).unwrap());
+        assert!(store.save_ocr_candidate(&cache_request).unwrap());
+        let cached = store
+            .ocr_candidate(&generation_id, &region_id, &[40; 32])
+            .unwrap()
+            .unwrap();
+        assert_eq!(cached.candidate_json, candidate_json);
+        let mut changed = cache_request;
+        changed.candidate_json.extend_from_slice(b"changed");
+        assert!(store.save_ocr_candidate(&changed).is_err());
     }
 
     #[test]

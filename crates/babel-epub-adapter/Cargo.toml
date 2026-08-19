@@ -10,6 +10,7 @@ babel-adapter-protocol = { path = "../babel-adapter-protocol" }
 babel-domain = { path = "../babel-domain" }
 babel-resource-graph = { path = "../babel-resource-graph" }
 babel-tir = { path = "../babel-tir" }
+image.workspace = true
 quick-xml.workspace = true
 serde.workspace = true
 serde_json.workspace = true

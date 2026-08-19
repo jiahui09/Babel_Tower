@@ -252,6 +252,15 @@ pub struct OverlayUnit {
 }
 
 #[derive(Clone, Debug, PartialEq, Serialize, Deserialize)]
+pub struct ImageOverlay {
+    pub image_resource_id: ResourceId,
+    pub source_locator: Locator,
+    pub region_locator: Locator,
+    pub derived_object: ObjectHandle,
+    pub media_type: String,
+}
+
+#[derive(Clone, Debug, PartialEq, Serialize, Deserialize)]
 pub struct ExportPlan {
     pub plan_id: [u8; 32],
     pub generation_id: GenerationId,
@@ -327,6 +336,24 @@ pub trait Adapter: Send + Sync {
         io: &dyn CapabilityIo,
         context: &ExecutionContext<'_>,
     ) -> Result<VerificationReport, AdapterError>;
+
+    fn apply_image_overlays(
+        &self,
+        _plan: &ExportPlan,
+        _input: &ObjectHandle,
+        overlays: &[ImageOverlay],
+        _staging: &StagingHandle,
+        _io: &dyn CapabilityIo,
+        _context: &ExecutionContext<'_>,
+    ) -> Result<(), AdapterError> {
+        if overlays.is_empty() {
+            Ok(())
+        } else {
+            Err(AdapterError::InvalidInput(
+                "adapter does not support image member overlays".to_owned(),
+            ))
+        }
+    }
 }
 
 #[derive(Clone, PartialEq, Message)]

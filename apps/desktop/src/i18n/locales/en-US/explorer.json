@@ -1,0 +1,20 @@
+{
+  "title": "Resource explorer",
+  "resources": "Resources",
+  "outline": "Outline",
+  "search": "Search",
+  "searchHint": "Enter at least two characters to search source and translation",
+  "searching": "Searching",
+  "noSearchResults": "No matching results",
+  "source": "Source originals",
+  "workspace": "Workspace",
+  "derived": "Derived resources",
+  "readonly": "Read only",
+  "newFolder": "New folder",
+  "rename": "Rename",
+  "move": "Move",
+  "delete": "Move to trash",
+  "restore": "Restore",
+  "reveal": "Reveal in file manager",
+  "empty": "No project resources to display"
+}

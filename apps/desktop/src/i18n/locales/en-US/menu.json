@@ -1,0 +1,15 @@
+{
+  "file": "File",
+  "edit": "Edit",
+  "view": "View",
+  "help": "Help",
+  "import": "Import work",
+  "export": "Export",
+  "undo": "Undo",
+  "redo": "Redo",
+  "commandPalette": "Command palette",
+  "focusMode": "Focus mode",
+  "toggleExplorer": "Toggle resource explorer",
+  "toggleInspector": "Toggle inspector",
+  "about": "About Babel Tower"
+}

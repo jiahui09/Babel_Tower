@@ -1,0 +1,11 @@
+{
+  "title": "无法完成操作",
+  "unexpected": "发生了未预期的错误。",
+  "ipcUnavailable": "桌面核心当前不可用。生产模式不会显示演示数据。",
+  "notImplemented": "此能力尚未由桌面核心提供。",
+  "notFound": "目标内容已不存在。",
+  "revisionConflict": "译文版本发生冲突，本地输入仍被保留。",
+  "permissionDenied": "该资源是只读的，无法执行此操作。",
+  "bridgeUnavailable": "桌面核心当前不可用。",
+  "exportUnavailable": "导出命令尚未接入桌面核心。"
+}

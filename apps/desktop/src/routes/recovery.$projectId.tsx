@@ -20,6 +20,7 @@ function RecoveryPage() {
           <Link
             to="/projects/$projectId/content"
             params={{ projectId }}
+            search={{ unitId: undefined }}
             className={buttonVariants({ variant: "primary" })}
           >
             恢复并继续

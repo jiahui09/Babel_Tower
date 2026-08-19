@@ -10,18 +10,22 @@ babel-adapter-host = { path = "../babel-adapter-host" }
 babel-adapter-protocol = { path = "../babel-adapter-protocol" }
 babel-domain = { path = "../babel-domain" }
 babel-epub-adapter = { path = "../babel-epub-adapter" }
+babel-image = { path = "../babel-image" }
 babel-markdown-adapter = { path = "../babel-markdown-adapter" }
 babel-resource-graph = { path = "../babel-resource-graph" }
 babel-runtime = { path = "../babel-runtime" }
 babel-storage = { path = "../babel-storage" }
 babel-txt-adapter = { path = "../babel-txt-adapter" }
 babel-tir = { path = "../babel-tir" }
+base64.workspace = true
 hex.workspace = true
+image.workspace = true
 sha2.workspace = true
 rusqlite.workspace = true
 serde.workspace = true
 serde_json.workspace = true
 thiserror.workspace = true
+zip.workspace = true
 
 [dev-dependencies]
 tempfile.workspace = true

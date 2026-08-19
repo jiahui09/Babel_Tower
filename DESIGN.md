@@ -2,12 +2,20 @@
 
 ## 设计事实源
 
-- 状态：第二版收敛设计草案，已吸收第一轮产品审查；第六阶段 A 的统一工作项、B 的导航持久化、C 的 IPC 最小闭环，以及 D 的项目库/文本导入闭环已实现。
+- 状态：前端重构方案 v2 已进入阶段 0-2 实施；Bridge、结构化译文、统一桌面壳、项目库、长文/单元编辑、源码/Diff 标签和设置基础已落地，阶段 4 的文件写操作与最终导出命令仍未完成。
 - 最后更新：2026-08-18。
 - 主要界面：项目库、导入、翻译现场（长文、单元、资源三种观察方式）、按需项目状态、问题与校验、导出记录、恢复与诊断。
 - 已审阅资料：`.omx/plans/prd-offline-translation-workbench.md`、`.omx/plans/architecture-offline-translation-workbench.md`、`.omx/plans/test-spec-offline-translation-workbench.md`、`.omx/specs/deep-interview-offline-translation-workbench.md`。
 - 已知事实：仓库仍是新项目，没有现有界面代码、组件、视觉素材、截图、路由或品牌资产。
 - 产品结论：Babel Tower 是以长篇人工翻译为核心、能够安全处理结构化内容与关联图片的个人离线翻译工作台，不是追求覆盖一切格式的通用本地化平台。
+
+### v2 实施契约
+
+- 生产界面只能通过 `DesktopBridge` 访问核心；Fixture Bridge 只允许在测试入口显式注入，生产 IPC 失败不显示预览数据。
+- 核心权威保存格式是 `TranslationDocumentV1`，Tiptap JSON 只属于视图层；纯文本投影用于搜索和旧格式兼容。
+- Query 管理核心数据，Zustand 只管理标签、面板、分屏、焦点和临时编辑状态；菜单、工具栏、命令面板和快捷键共享 `CommandRegistry`。
+- 默认工作台使用 28px 菜单栏、40px 工具栏、260px Explorer、中心双栏编辑区、320px 检查器和 24px 状态栏；窄窗口自动收起检查器，专注模式隐藏两侧面板。
+- `zh-CN` 与 `en-US`、明暗主题、编辑器和源码/Diff 视图均为真实状态；不以静态 Dummy 数据伪装未实现的核心能力。
 
 ### 产品中心
 
@@ -96,6 +104,8 @@
 | `/projects/:projectId/content/:chapterId?unit=:unitId` | 长文模式 | 章节和单元可选；数据加载后只规范化一次。 |
 | `/projects/:projectId/units?filter=&unit=` | 单元模式 | 搜索与筛选写入查询参数；选择变化不离开本页。 |
 | `/projects/:projectId/resources?resource=&region=` | 资源模式 | 区域可选；目标不存在时显示原位空状态，不重定向。 |
+| `/projects/:projectId/source` | 源码查看 | 通过只读 CodeMirror 查看当前工作项的格式源码；不能绕过工作项覆盖原件。 |
+| `/projects/:projectId/diff` | 版本差异 | 通过 CodeMirror MergeView 对照当前原文与译文投影。 |
 | `/projects/:projectId/validate` | 问题与校验 | 从顶栏问题入口进入；跳到目标内容后，返回应回到当前筛选的问题列表。 |
 | `/projects/:projectId/exports/:runId?` | 导出记录 | 从导出菜单进入；新建导出是覆盖在当前翻译现场上的对话流程。 |
 | `/recovery/:projectId` | 恢复项目 | 只有需要用户决定时进入；完成后回到最近有效的翻译位置。 |
@@ -596,7 +606,7 @@ TranslationWorkItem
 | 产品定义 | 以长篇人工翻译为核心、兼容结构化资源的个人离线翻译工作台 | 翻译能力优先于通用格式覆盖和项目管理。 |
 | 工作台密度 | 48px 顶栏、236px 可收起上下文、主读写区；辅助面板默认关闭 | 保留专业能力，但让默认现场接近阅读与写作。 |
 | 默认对照方式 | 来源上下文加译文主区，随宽度并列或上下排列 | 兼顾语境与中日韩写作宽度。 |
-| 默认主题 | 首版只有浅色 | 缩小视觉验证范围；深色主题待定。 |
+| 默认主题 | 支持浅色、深色和跟随系统 | 主题切换只改变设计令牌，不改变工作项或编辑状态。 |
 | 导航 | 翻译是唯一一级现场；长文/单元/资源是观察方式；问题与导出按需出现 | 建立正确产品权重并减少模式切换感。 |
 | 项目进入 | 正常情况直接回上次翻译位置；项目状态页按需访问 | 去掉长期使用中的中间点击。 |
 | 翻译辅助 | 术语、历史译文、重复句、批注、查找替换和格式提示进入首版 | 从“管理翻译”转向“帮助完成翻译”。 |

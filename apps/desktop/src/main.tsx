@@ -1,20 +1,13 @@
 import React from "react";
 import ReactDOM from "react-dom/client";
-import { QueryClient, QueryClientProvider } from "@tanstack/react-query";
 import { RouterProvider, createHashHistory, createRouter } from "@tanstack/react-router";
-import { TooltipProvider } from "@radix-ui/react-tooltip";
 
+import { AppProviders } from "./app/providers";
+import "./i18n";
+import { TauriDesktopBridge } from "./platform/desktop-bridge";
+import { createFixtureAppBridge } from "./test/fixture-app";
 import { routeTree } from "./routeTree.gen";
 import "./design/tokens.css";
-
-const queryClient = new QueryClient({
-  defaultOptions: {
-    queries: {
-      retry: 1,
-      staleTime: 5_000,
-    },
-  },
-});
 
 const router = createRouter({
   routeTree,
@@ -28,12 +21,19 @@ declare module "@tanstack/react-router" {
   }
 }
 
+const bridge =
+  import.meta.env.VITE_DESKTOP_BRIDGE === "fixture"
+    ? import.meta.env.DEV
+      ? createFixtureAppBridge()
+      : (() => {
+          throw new Error("Fixture bridge is only available in development mode");
+        })()
+    : new TauriDesktopBridge();
+
 ReactDOM.createRoot(document.getElementById("root") as HTMLElement).render(
   <React.StrictMode>
-    <QueryClientProvider client={queryClient}>
-      <TooltipProvider delayDuration={500}>
-        <RouterProvider router={router} />
-      </TooltipProvider>
-    </QueryClientProvider>
+    <AppProviders bridge={bridge}>
+      <RouterProvider router={router} />
+    </AppProviders>
   </React.StrictMode>,
 );

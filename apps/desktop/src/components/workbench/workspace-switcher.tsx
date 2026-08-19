@@ -1,21 +1,23 @@
 import { Link } from "@tanstack/react-router";
 import { FileText, Image, Rows3 } from "lucide-react";
+import { useTranslation } from "react-i18next";
 
 import { cn } from "../../lib/utils";
 
 const items = [
-  { to: "/projects/$projectId/content", label: "长文", icon: FileText },
-  { to: "/projects/$projectId/units", label: "单元", icon: Rows3 },
-  { to: "/projects/$projectId/resources", label: "资源", icon: Image },
+  { to: "/projects/$projectId/content", search: { unitId: undefined }, labelKey: "longForm", icon: FileText },
+  { to: "/projects/$projectId/units", labelKey: "units", icon: Rows3 },
+  { to: "/projects/$projectId/resources", labelKey: "resources", icon: Image },
 ] as const;
 
 export function WorkspaceSwitcher({ projectId }: { projectId: string }) {
+  const { t } = useTranslation("workbench");
   return (
     <nav
       className="flex h-8 items-center rounded-[6px] border border-[var(--border)] bg-[var(--surface-inset)] p-0.5"
-      aria-label="观察方式"
+      aria-label={t("translation")}
     >
-      {items.map(({ to, label, icon: Icon }) => (
+      {items.map(({ to, labelKey, icon: Icon }) => (
         <Link
           key={to}
           to={to}
@@ -29,7 +31,7 @@ export function WorkspaceSwitcher({ projectId }: { projectId: string }) {
           }}
         >
           <Icon size={14} aria-hidden="true" />
-          {label}
+          {t(labelKey)}
         </Link>
       ))}
     </nav>

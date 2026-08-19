@@ -24,8 +24,38 @@
   --warning: #fff0c7;
   --danger: #b83b3b;
   --radius: 6px;
-  --topbar-height: 48px;
-  --context-width: 236px;
+  --menu-height: 28px;
+  --toolbar-height: 40px;
+  --statusbar-height: 24px;
+  --explorer-width: 260px;
+  --inspector-width: 320px;
+  --editor-font: "Noto Serif SC", "Source Han Serif SC", serif;
+  --editor-font-size: 18px;
+  --editor-line-height: 1.8;
+}
+
+:root[data-theme="dark"] {
+  --surface: #171a19;
+  --surface-raised: #1f2321;
+  --surface-inset: #292e2b;
+  --border: #373d3a;
+  --border-strong: #505954;
+  --text: #eef2ef;
+  --text-secondary: #b3bdb8;
+  --text-muted: #8b9690;
+  --accent: #4cae98;
+  --accent-hover: #65c2ad;
+  --focus: #70c7b5;
+  --selection: #253f4b;
+  --selection-text: #d8eef7;
+  --warning: #4b3f21;
+  --danger: #ef7777;
+}
+
+:root[data-density="comfortable"] {
+  --menu-height: 32px;
+  --toolbar-height: 44px;
+  --statusbar-height: 26px;
 }
 
 * {
@@ -50,7 +80,8 @@ body {
 
 button,
 input,
-textarea {
+textarea,
+select {
   font: inherit;
 }
 
@@ -60,6 +91,12 @@ input,
 textarea,
 [tabindex] {
   outline: none;
+}
+
+.tiptap {
+  font-family: var(--editor-font);
+  font-size: var(--editor-font-size);
+  line-height: var(--editor-line-height);
 }
 
 :focus-visible {

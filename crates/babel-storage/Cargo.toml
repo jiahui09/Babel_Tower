@@ -6,6 +6,7 @@ license.workspace = true
 rust-version.workspace = true
 
 [dependencies]
+babel-ocr = { path = "../babel-ocr" }
 babel-domain = { path = "../babel-domain" }
 hex.workspace = true
 rusqlite.workspace = true

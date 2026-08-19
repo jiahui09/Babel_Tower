@@ -1,22 +1,25 @@
 import { AlertCircle, Check, LoaderCircle, PencilLine } from "lucide-react";
+import { useTranslation } from "react-i18next";
 
 import { useWorkbenchStore, type SaveState } from "../../stores/workbench";
 
-const labels: Record<SaveState, string> = {
-  editing: "正在编辑",
-  saving: "正在保存",
-  saved: "已保存",
-  error: "保存失败",
+const labelKeys: Record<SaveState, "statusEditing" | "statusSaving" | "statusSaved" | "statusError"> = {
+  editing: "statusEditing",
+  saving: "statusSaving",
+  saved: "statusSaved",
+  error: "statusError",
+  conflict: "statusError",
 };
 
 export function SaveIndicator() {
+  const { t } = useTranslation("workbench");
   const state = useWorkbenchStore((value) => value.saveState);
   const Icon =
     state === "saved"
       ? Check
       : state === "saving"
         ? LoaderCircle
-        : state === "error"
+        : state === "error" || state === "conflict"
           ? AlertCircle
           : PencilLine;
 
@@ -27,7 +30,7 @@ export function SaveIndicator() {
       aria-live="polite"
     >
       <Icon size={14} className={state === "saving" ? "animate-spin" : undefined} aria-hidden="true" />
-      <span>{labels[state]}</span>
+      <span>{t(labelKeys[state])}</span>
     </div>
   );
 }

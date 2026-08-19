@@ -7,7 +7,9 @@ use babel_domain::{
     workbench::{NavigationFilters, NavigationPosition, WorkspaceView},
 };
 
-use crate::project::{DraftDisposition, DraftRecovery, UnitPageItem};
+use crate::project::{
+    DraftDisposition, DraftRecovery, ImageRegionEditRecord, OcrCandidateCacheRecord, UnitPageItem,
+};
 
 const QUERY_CACHE_KIB: i64 = 16 * 1024;
 
@@ -26,6 +28,8 @@ pub struct WorkbenchUnitRecord {
     pub reading_order: u64,
     pub source_text: String,
     pub translation: Option<String>,
+    pub translation_document_schema_version: Option<i64>,
+    pub translation_document_json: Option<Vec<u8>>,
     pub revision_id: Option<i64>,
     pub revision_commit_sequence: Option<i64>,
     pub resource_kind: String,
@@ -37,6 +41,7 @@ pub struct ResourceRecord {
     pub resource_id: [u8; 16],
     pub kind: String,
     pub semantic_path: String,
+    pub locator_json: Vec<u8>,
 }
 
 #[derive(Clone, Debug, PartialEq, Eq)]
@@ -44,7 +49,18 @@ pub struct RelatedResourceRecord {
     pub resource_id: [u8; 16],
     pub kind: String,
     pub semantic_path: String,
+    pub locator_json: Vec<u8>,
     pub edge_kind: String,
+}
+
+#[derive(Clone, Debug, PartialEq, Eq)]
+pub struct ImageExportOverlayRecord {
+    pub region_resource_id: [u8; 16],
+    pub image_resource_id: [u8; 16],
+    pub image_locator_json: Vec<u8>,
+    pub region_locator_json: Vec<u8>,
+    pub derived_object_hash: [u8; 32],
+    pub media_type: String,
 }
 
 #[derive(Clone, Debug, PartialEq, Eq)]
@@ -73,6 +89,126 @@ impl ProjectQuery {
             [],
             |row| row.get(0),
         )
+    }
+
+    pub fn image_region_edit(
+        &self,
+        unit_id: &[u8; 16],
+    ) -> rusqlite::Result<Option<ImageRegionEditRecord>> {
+        self.connection
+            .query_row(
+                "SELECT revision.revision_id, revision.unit_id, revision.generation_id,
+                        revision.region_resource_id, revision.corrected_source_text,
+                        revision.render_parameters_json, revision.derived_object_hash,
+                        revision.commit_sequence
+                 FROM image_region_head head
+                 JOIN image_region_revision revision ON revision.revision_id = head.revision_id
+                 WHERE head.unit_id = ?1",
+                [unit_id.as_slice()],
+                |row| {
+                    let optional_hash = row
+                        .get::<_, Option<Vec<u8>>>(6)?
+                        .map(vec_to_array)
+                        .transpose()?;
+                    Ok(ImageRegionEditRecord {
+                        revision_id: row.get(0)?,
+                        unit_id: vec_to_array(row.get(1)?)?,
+                        generation_id: vec_to_array(row.get(2)?)?,
+                        region_resource_id: vec_to_array(row.get(3)?)?,
+                        corrected_source_text: row.get(4)?,
+                        render_parameters_json: row.get(5)?,
+                        derived_object_hash: optional_hash,
+                        commit_sequence: row.get(7)?,
+                    })
+                },
+            )
+            .optional()
+    }
+
+    pub fn image_export_overlays(
+        &self,
+        generation_id: &[u8; 16],
+        frozen_commit_sequence: i64,
+    ) -> rusqlite::Result<Vec<ImageExportOverlayRecord>> {
+        let mut statement = self.connection.prepare_cached(
+            "SELECT revision.region_resource_id, image.resource_id,
+                    image.locator_json, region.locator_json,
+                    revision.derived_object_hash,
+                    COALESCE(object.media_type, 'image/png')
+             FROM image_region_revision revision
+             JOIN generation_resource region
+               ON region.generation_id = revision.generation_id
+              AND region.resource_id = revision.region_resource_id
+              AND region.kind = 'ImageRegion'
+             JOIN generation_edge edge
+               ON edge.generation_id = revision.generation_id
+              AND edge.from_resource_id = revision.region_resource_id
+              AND edge.edge_kind = 'RegionOf'
+             JOIN generation_resource image
+               ON image.generation_id = edge.generation_id
+              AND image.resource_id = edge.to_resource_id
+              AND image.kind = 'Image'
+             LEFT JOIN object_record object
+               ON object.object_hash = revision.derived_object_hash
+             WHERE revision.generation_id = ?1
+               AND revision.commit_sequence <= ?2
+               AND revision.revision_id = (
+                    SELECT candidate.revision_id
+                    FROM image_region_revision candidate
+                    WHERE candidate.unit_id = revision.unit_id
+                      AND candidate.generation_id = revision.generation_id
+                      AND candidate.commit_sequence <= ?2
+                    ORDER BY candidate.commit_sequence DESC
+                    LIMIT 1
+               )
+               AND revision.derived_object_hash IS NOT NULL
+             ORDER BY revision.region_resource_id",
+        )?;
+        statement
+            .query_map(
+                rusqlite::params![generation_id.as_slice(), frozen_commit_sequence],
+                |row| {
+                    Ok(ImageExportOverlayRecord {
+                        region_resource_id: vec_to_array(row.get(0)?)?,
+                        image_resource_id: vec_to_array(row.get(1)?)?,
+                        image_locator_json: row.get(2)?,
+                        region_locator_json: row.get(3)?,
+                        derived_object_hash: vec_to_array(row.get(4)?)?,
+                        media_type: row.get(5)?,
+                    })
+                },
+            )?
+            .collect()
+    }
+
+    pub fn ocr_candidate(
+        &self,
+        generation_id: &[u8; 16],
+        region_resource_id: &[u8; 16],
+        model_hash: &[u8; 32],
+    ) -> rusqlite::Result<Option<OcrCandidateCacheRecord>> {
+        self.connection
+            .query_row(
+                "SELECT generation_id, region_resource_id, model_hash,
+                        candidate_json, created_at_ms
+                 FROM image_region_ocr_cache
+                 WHERE generation_id = ?1 AND region_resource_id = ?2 AND model_hash = ?3",
+                params![
+                    generation_id.as_slice(),
+                    region_resource_id.as_slice(),
+                    model_hash.as_slice()
+                ],
+                |row| {
+                    Ok(OcrCandidateCacheRecord {
+                        generation_id: vec_to_array(row.get(0)?)?,
+                        region_resource_id: vec_to_array(row.get(1)?)?,
+                        model_hash: vec_to_array(row.get(2)?)?,
+                        candidate_json: row.get(3)?,
+                        created_at_ms: row.get(4)?,
+                    })
+                },
+            )
+            .optional()
     }
 
     pub fn page_after(
@@ -169,6 +305,7 @@ impl ProjectQuery {
                 "SELECT gu.generation_id, gu.unit_id, gu.source_unit_key, gu.resource_id,
                         gu.locator_json, gu.tir_json, gu.reading_order, u.source_text,
                         revision.text, head.revision_id, revision.commit_sequence,
+                        revision.document_schema_version, revision.document_json,
                         resource.kind, resource.semantic_path
                  FROM import_generation generation
                  JOIN generation_unit gu ON gu.generation_id = generation.generation_id
@@ -194,10 +331,29 @@ impl ProjectQuery {
                         translation: row.get(8)?,
                         revision_id: row.get(9)?,
                         revision_commit_sequence: row.get(10)?,
-                        resource_kind: row.get(11)?,
-                        semantic_path: row.get(12)?,
+                        translation_document_schema_version: row.get(11)?,
+                        translation_document_json: row.get(12)?,
+                        resource_kind: row.get(13)?,
+                        semantic_path: row.get(14)?,
                     })
                 },
+            )
+            .optional()
+    }
+
+    pub fn unit_id_for_source_key(
+        &self,
+        source_unit_key: &[u8; 32],
+    ) -> rusqlite::Result<Option<[u8; 16]>> {
+        self.connection
+            .query_row(
+                "SELECT gu.unit_id
+                 FROM import_generation generation
+                 JOIN generation_unit gu ON gu.generation_id = generation.generation_id
+                 WHERE generation.state = 'Active' AND gu.source_unit_key = ?1
+                 LIMIT 1",
+                [source_unit_key.as_slice()],
+                |row| vec_to_array(row.get(0)?),
             )
             .optional()
     }
@@ -217,6 +373,7 @@ impl ProjectQuery {
             "SELECT gu.generation_id, gu.unit_id, gu.source_unit_key, gu.resource_id,
                     gu.locator_json, gu.tir_json, gu.reading_order, u.source_text,
                     revision.text, head.revision_id, revision.commit_sequence,
+                    revision.document_schema_version, revision.document_json,
                     resource.kind, resource.semantic_path
              FROM import_generation generation
              JOIN generation_unit gu ON gu.generation_id = generation.generation_id
@@ -252,8 +409,10 @@ impl ProjectQuery {
                         translation: row.get(8)?,
                         revision_id: row.get(9)?,
                         revision_commit_sequence: row.get(10)?,
-                        resource_kind: row.get(11)?,
-                        semantic_path: row.get(12)?,
+                        translation_document_schema_version: row.get(11)?,
+                        translation_document_json: row.get(12)?,
+                        resource_kind: row.get(13)?,
+                        semantic_path: row.get(14)?,
                     })
                 },
             )?
@@ -267,7 +426,7 @@ impl ProjectQuery {
     ) -> rusqlite::Result<Option<ResourceRecord>> {
         self.connection
             .query_row(
-                "SELECT resource_id, kind, semantic_path
+                "SELECT resource_id, kind, semantic_path, locator_json
                  FROM generation_resource
                  WHERE generation_id = ?1 AND resource_id = ?2",
                 params![generation_id.as_slice(), resource_id.as_slice()],
@@ -276,6 +435,7 @@ impl ProjectQuery {
                         resource_id: vec_to_array(row.get(0)?)?,
                         kind: row.get(1)?,
                         semantic_path: row.get(2)?,
+                        locator_json: row.get(3)?,
                     })
                 },
             )
@@ -288,7 +448,8 @@ impl ProjectQuery {
         resource_id: &[u8; 16],
     ) -> rusqlite::Result<Vec<RelatedResourceRecord>> {
         let mut statement = self.connection.prepare_cached(
-            "SELECT related.resource_id, related.kind, related.semantic_path, edge.edge_kind
+            "SELECT related.resource_id, related.kind, related.semantic_path,
+                    related.locator_json, edge.edge_kind
              FROM generation_edge edge
              JOIN generation_resource related
                ON related.generation_id = edge.generation_id
@@ -308,7 +469,8 @@ impl ProjectQuery {
                         resource_id: vec_to_array(row.get(0)?)?,
                         kind: row.get(1)?,
                         semantic_path: row.get(2)?,
-                        edge_kind: row.get(3)?,
+                        locator_json: row.get(3)?,
+                        edge_kind: row.get(4)?,
                     })
                 },
             )?

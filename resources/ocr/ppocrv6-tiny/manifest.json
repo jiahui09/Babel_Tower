@@ -1,0 +1,41 @@
+{
+  "schema_version": 1,
+  "engine": "PaddleOCR",
+  "engine_version": "PP-OCRv6_tiny",
+  "runtime": "ONNX Runtime",
+  "runtime_version": "1.20.0",
+  "assets": [
+    {
+      "id": "onnxruntime-linux-x64",
+      "kind": "runtime",
+      "relative_path": "runtime/libonnxruntime.so",
+      "byte_length": 25549536,
+      "sha256_hex": "be53c8e4f8a3c6917db4cfe8838ac35576f22091fdbf682ab4e89c8c291829b7",
+      "license_ids": ["MIT", "Apache-2.0"]
+    },
+    {
+      "id": "ppocrv6-tiny-det",
+      "kind": "detection_model",
+      "relative_path": "det.onnx",
+      "byte_length": 1780590,
+      "sha256_hex": "193bab7a04fca699a6c82e6abb5b81bdb28177f0abd4062552b04908dafb19f8",
+      "license_ids": ["Apache-2.0", "PaddleOCR-Model-License"]
+    },
+    {
+      "id": "ppocrv6-tiny-rec",
+      "kind": "recognition_model",
+      "relative_path": "rec.onnx",
+      "byte_length": 4462639,
+      "sha256_hex": "9ef676d6ed3c88256a2d92c640c44f25b0c40947e111b14b8be8f594091563e6",
+      "license_ids": ["Apache-2.0", "PaddleOCR-Model-License"]
+    },
+    {
+      "id": "ppocrv6-tiny-dictionary",
+      "kind": "dictionary",
+      "relative_path": "dict.txt",
+      "byte_length": 27156,
+      "sha256_hex": "c5cbe34ef40c29c4df07ed012bf96569cb69a2d2a01a07027e9f13cb832bd9cd",
+      "license_ids": ["Apache-2.0", "PaddleOCR-Model-License"]
+    }
+  ]
+}

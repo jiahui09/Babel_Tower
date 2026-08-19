@@ -3,7 +3,7 @@
 use std::{
     collections::{HashMap, HashSet},
     fs::{self, File, OpenOptions},
-    io::{Cursor, Read},
+    io::{Cursor, Read, Write},
     path::{Path, PathBuf},
     sync::{
         Arc, Mutex,
@@ -16,8 +16,8 @@ use std::{
 
 use babel_adapter_host::CapabilityRegistry;
 use babel_adapter_protocol::{
-    Adapter, AdapterError, CancellationToken, Cursor as AdapterCursor, ExecutionContext,
-    ExtractedUnit, InventoryItem, OverlayUnit, Page, TaskBudget,
+    Adapter, AdapterError, CancellationToken, CapabilityIo, Cursor as AdapterCursor,
+    ExecutionContext, ExtractedUnit, ImageOverlay, InventoryItem, OverlayUnit, Page, TaskBudget,
 };
 use babel_domain::{
     core::{ProjectId, ResourceId, RevisionKind, TaskId, TaskState, UnitId, WorkPriority},
@@ -30,6 +30,10 @@ use babel_runtime::{
     ipc::MAX_FRAME_BYTES,
     process_worker::{ProcessWorker, WorkerCancelToken, WorkerError, WorkerLaunch},
 };
+pub use babel_storage::project::{
+    ImageRegionEditRecord, OcrCandidateCacheRecord, SaveImageRegionEditRequest,
+    SaveOcrCandidateRequest,
+};
 use babel_storage::{
     backup::{BackupError, BackupSnapshot},
     cas,
@@ -38,13 +42,15 @@ use babel_storage::{
         AnnotationRecord, BatchReplaceReceipt, DuplicateSourceGroup, GenerationBatch,
         GenerationBindingRecord, GenerationBindingView, GenerationDescriptor, GenerationEdgeRecord,
         GenerationResourceRecord, GenerationUnitRecord, MarkerRecord, NavigationSaveReceipt,
-        ObjectRecord, ProjectStore, ReplacePreviewItem, SaveReceipt, TaskRecord, TermRecord,
-        TranslationHistoryItem, UpsertTermRequest, candidate_set_hash,
+        ObjectRecord, ProjectStore, RecordWorkspaceOperationRequest, ReplacePreviewItem,
+        SaveReceipt, TaskRecord, TermRecord, TranslationHistoryItem, UpsertTermRequest,
+        WorkspaceOperationState, FinishWorkspaceOperationRequest, candidate_set_hash,
     },
     query::ProjectQuery,
 };
-use babel_tir::{Token, UnitContent};
+use babel_tir::{Token, TranslationDocumentV1, UnitContent};
 use babel_txt_adapter::TxtAdapter;
+use base64::{Engine as _, engine::general_purpose::STANDARD as BASE64};
 use serde::{Deserialize, Serialize};
 use sha2::{Digest, Sha256};
 use thiserror::Error;
@@ -58,6 +64,7 @@ const FORMAT_PIPELINE_PAGE_BYTES: u64 = 64 * 1024 * 1024;
 const FORMAT_PIPELINE_PAGE_NODES: u32 = 100_000;
 const FORMAT_WORKER_CHUNK_BYTES: usize = 1024 * 1024;
 const FORMAT_WRITER_BATCH_ITEMS: usize = 5_000;
+const MAX_IMAGE_PREVIEW_BYTES: usize = 20 * 1024 * 1024;
 
 const TXT_ADAPTER_ID: &str = "org.babel-tower.txt";
 const MARKDOWN_ADAPTER_ID: &str = "org.babel-tower.markdown";
@@ -166,6 +173,10 @@ pub enum CommitEvent {
         affected_units: usize,
         commit_sequence_end: i64,
     },
+    ImageRegionCommitted {
+        revision_id: i64,
+        commit_sequence: i64,
+    },
     ObjectReferenced {
         object_hash: [u8; 32],
     },
@@ -237,6 +248,7 @@ pub struct ResourceAssociation {
 }
 
 #[derive(Clone, Debug, PartialEq, Serialize, Deserialize)]
+#[serde(rename_all = "camelCase")]
 pub struct TranslationWorkItem {
     pub schema_version: u32,
     pub project_id: ProjectId,
@@ -247,6 +259,7 @@ pub struct TranslationWorkItem {
     pub source: UnitContent,
     pub source_text: String,
     pub translation: Option<String>,
+    pub translation_document: TranslationDocumentV1,
     pub status: TranslationStatus,
     pub locator: Locator,
     pub reading_order: u64,
@@ -254,6 +267,14 @@ pub struct TranslationWorkItem {
     pub revision_commit_sequence: Option<i64>,
     pub project_commit_sequence: i64,
     pub resources: Vec<ResourceAssociation>,
+}
+
+#[derive(Clone, Debug, PartialEq, Eq, Serialize, Deserialize)]
+pub struct ImagePreview {
+    pub media_type: String,
+    pub byte_length: usize,
+    pub source_hash: [u8; 32],
+    pub data_base64: String,
 }
 
 #[derive(Clone, Debug, PartialEq, Serialize, Deserialize)]
@@ -278,6 +299,46 @@ pub struct AddAnnotationRequest {
     pub grapheme_end: u64,
     pub body: String,
     pub created_at_ms: i64,
+}
+
+#[derive(Clone, Debug, PartialEq, Eq, Serialize, Deserialize)]
+#[serde(tag = "kind", rename_all = "camelCase")]
+pub enum WorkspaceMutationRequest {
+    CreateFolder {
+        project_id: String,
+        parent_id: String,
+        name: String,
+    },
+    Rename {
+        project_id: String,
+        node_id: String,
+        name: String,
+    },
+    Move {
+        project_id: String,
+        node_id: String,
+        parent_id: String,
+    },
+    Trash {
+        project_id: String,
+        node_id: String,
+    },
+    Restore {
+        project_id: String,
+        node_id: String,
+    },
+    Reveal {
+        project_id: String,
+        node_id: String,
+    },
+}
+
+#[derive(Clone, Debug, PartialEq, Eq, Serialize, Deserialize)]
+#[serde(rename_all = "camelCase")]
+pub struct WorkspaceMutationReceipt {
+    pub operation_id: String,
+    pub commit_sequence: i64,
+    pub affected_node_ids: Vec<String>,
 }
 
 pub type TxtImportReport = FormatImportReport;
@@ -372,6 +433,7 @@ struct PreparedFormatImport {
     nodes: Vec<babel_resource_graph::ResourceNode>,
     edges: Vec<babel_resource_graph::ResourceEdge>,
     units: Vec<ExtractedUnit>,
+    external_objects: Vec<ObjectRecord>,
     worker_peak_rss_kib: Option<u64>,
 }
 
@@ -771,8 +833,72 @@ fn prepare_format_source_with_worker(
         nodes,
         edges,
         units,
+        external_objects: Vec::new(),
         worker_peak_rss_kib,
     })
+}
+
+fn attach_markdown_assets(
+    prepared: &mut PreparedFormatImport,
+    source_path: &Path,
+    object_root: impl AsRef<Path>,
+    created_at_ms: i64,
+) -> Result<(), KernelError> {
+    let parent = source_path.parent().unwrap_or_else(|| Path::new("."));
+    let object_root = object_root.as_ref();
+    for node in &mut prepared.nodes {
+        if node.kind != ResourceKind::Image {
+            continue;
+        }
+        let Locator::StructuralPath { path_segments, .. } = &node.locator else {
+            continue;
+        };
+        let Some(url) = path_segments.last() else {
+            continue;
+        };
+        let relative = Path::new(url);
+        if relative.is_absolute()
+            || relative.components().any(|component| {
+                matches!(
+                    component,
+                    std::path::Component::ParentDir | std::path::Component::RootDir
+                )
+            })
+            || url.contains("://")
+            || url.starts_with('#')
+        {
+            continue;
+        }
+        let path = parent.join(relative);
+        if !path.is_file() {
+            continue;
+        }
+        let bytes = fs::read(&path)?;
+        let (hash, _, byte_length) = cas::publish_reader(object_root, bytes.as_slice())?;
+        let media_type = image::guess_format(bytes.as_slice())
+            .ok()
+            .map(|format| match format {
+                image::ImageFormat::Png => "image/png",
+                image::ImageFormat::Jpeg => "image/jpeg",
+                image::ImageFormat::WebP => "image/webp",
+                image::ImageFormat::Gif => "image/gif",
+                _ => "application/octet-stream",
+            })
+            .unwrap_or("application/octet-stream")
+            .to_owned();
+        prepared.external_objects.push(ObjectRecord {
+            hash,
+            byte_length,
+            media_type,
+        });
+        node.locator = Locator::ByteSpan {
+            object_hash: hash,
+            start: 0,
+            end: byte_length,
+        };
+    }
+    let _ = created_at_ms;
+    Ok(())
 }
 
 fn commit_prepared_format(
@@ -793,8 +919,17 @@ fn commit_prepared_format(
         nodes,
         edges,
         units,
+        external_objects,
         worker_peak_rss_kib,
     } = prepared;
+    for object in &external_objects {
+        store.register_object_reference(
+            "generation-resource",
+            generation_id.as_bytes(),
+            object,
+            created_at_ms,
+        )?;
+    }
     store.begin_generation(&GenerationDescriptor {
         generation_id: *generation_id.as_bytes(),
         source_snapshot_hash: source_hash,
@@ -975,6 +1110,8 @@ fn adapter_for_format(format: FormatKind) -> Result<Box<dyn Adapter>, KernelErro
 struct MaterializedFormatExport {
     registry: CapabilityRegistry,
     staging: babel_adapter_protocol::StagingHandle,
+    format: FormatKind,
+    image_overlays: Vec<ImageOverlay>,
     generation_id: [u8; 16],
     frozen_commit_sequence: i64,
     output_hash: [u8; 32],
@@ -1024,6 +1161,37 @@ fn materialize_format_export(
             })
         })
         .collect::<Result<Vec<_>, AdapterError>>()?;
+    let image_overlays = store
+        .image_export_overlays(generation_id, frozen_commit_sequence)?
+        .into_iter()
+        .map(|record| {
+            let object = store
+                .object_record(&record.derived_object_hash)
+                .map_err(|error| AdapterError::InvalidInput(error.to_string()))?;
+            let source_locator =
+                serde_json::from_slice(&record.image_locator_json).map_err(|error| {
+                    AdapterError::InvalidInput(format!("invalid image locator JSON: {error}"))
+                })?;
+            let region_locator =
+                serde_json::from_slice(&record.region_locator_json).map_err(|error| {
+                    AdapterError::InvalidInput(format!(
+                        "invalid image region locator JSON: {error}"
+                    ))
+                })?;
+            let derived_object = registry
+                .grant_object(object.hash, object.byte_length)
+                .map_err(|error| AdapterError::InvalidInput(error.to_string()))?;
+            Ok(ImageOverlay {
+                image_resource_id: babel_domain::core::ResourceId::from_bytes(
+                    record.image_resource_id,
+                ),
+                source_locator,
+                region_locator,
+                derived_object,
+                media_type: record.media_type,
+            })
+        })
+        .collect::<Result<Vec<_>, AdapterError>>()?;
     let plan = adapter.plan_export(
         &source,
         babel_domain::core::GenerationId::from_bytes(*generation_id),
@@ -1048,6 +1216,16 @@ fn materialize_format_export(
             break;
         }
     }
+    if !image_overlays.is_empty() {
+        adapter.apply_image_overlays(
+            &plan,
+            &source,
+            &image_overlays,
+            &staging,
+            &registry,
+            &execution,
+        )?;
+    }
     let verification = adapter.verify_output(&staging, &registry, &execution)?;
     if !verification.valid {
         return Err(KernelError::Adapter(AdapterError::InvalidInput(
@@ -1057,6 +1235,8 @@ fn materialize_format_export(
     Ok(MaterializedFormatExport {
         registry,
         staging,
+        format,
+        image_overlays,
         generation_id: *generation_id,
         frozen_commit_sequence,
         output_hash: verification.output_hash,
@@ -1071,6 +1251,16 @@ fn export_format_bytes(
     generation_id: &[u8; 16],
     frozen_commit_sequence: i64,
 ) -> Result<FormatExportReport, KernelError> {
+    let descriptor = store.source_snapshot_descriptor(generation_id)?;
+    if FormatKind::from_adapter_id(&descriptor.adapter_id)? == FormatKind::Markdown
+        && !store.markdown_image_resources(generation_id)?.is_empty()
+    {
+        return Err(AdapterError::InvalidInput(
+            "Markdown project contains image resources; use file export to preserve the resource closure"
+                .to_owned(),
+        )
+        .into());
+    }
     let materialized = materialize_format_export(
         store,
         object_root,
@@ -1102,6 +1292,15 @@ fn export_format_to_path(
         generation_id,
         frozen_commit_sequence,
     )?;
+    if materialized.format == FormatKind::Markdown {
+        publish_markdown_image_closure(
+            store,
+            generation_id,
+            frozen_commit_sequence,
+            &materialized,
+            &destination,
+        )?;
+    }
     materialized
         .registry
         .publish_staging_no_clobber(&materialized.staging, &destination)?;
@@ -1112,6 +1311,177 @@ fn export_format_to_path(
         byte_length: materialized.byte_length,
         path: destination,
     })
+}
+
+fn publish_markdown_image_closure(
+    store: &ProjectStore,
+    generation_id: &[u8; 16],
+    _frozen_commit_sequence: i64,
+    materialized: &MaterializedFormatExport,
+    destination: &Path,
+) -> Result<(), KernelError> {
+    let mut overlays = HashMap::<ResourceId, Vec<&ImageOverlay>>::new();
+    for overlay in &materialized.image_overlays {
+        overlays
+            .entry(overlay.image_resource_id)
+            .or_default()
+            .push(overlay);
+    }
+    let parent = destination.parent().unwrap_or_else(|| Path::new("."));
+    let resources = store.markdown_image_resources(generation_id)?;
+    let mut pending = Vec::with_capacity(resources.len());
+    for resource in resources {
+        let relative = resource
+            .semantic_path
+            .strip_prefix("image/")
+            .ok_or_else(|| AdapterError::InvalidInput("invalid Markdown image path".to_owned()))?;
+        let relative = Path::new(relative);
+        if relative.as_os_str().is_empty()
+            || relative.is_absolute()
+            || relative.components().any(|component| {
+                matches!(
+                    component,
+                    std::path::Component::ParentDir | std::path::Component::RootDir
+                )
+            })
+        {
+            return Err(AdapterError::InvalidInput(
+                "Markdown image path is outside the export directory".to_owned(),
+            )
+            .into());
+        }
+        let target = parent.join(relative);
+        if target.exists() {
+            return Err(KernelError::Io(std::io::Error::new(
+                std::io::ErrorKind::AlreadyExists,
+                format!(
+                    "Markdown image export target already exists: {}",
+                    target.display()
+                ),
+            )));
+        }
+        let locator: Locator = serde_json::from_slice(&resource.locator_json).map_err(|error| {
+            AdapterError::InvalidInput(format!("invalid Markdown image locator: {error}"))
+        })?;
+        let source = match locator {
+            Locator::ByteSpan {
+                object_hash,
+                start: 0,
+                end,
+            } => {
+                let record = store.object_record(&object_hash)?;
+                if end != record.byte_length {
+                    return Err(AdapterError::InvalidInput(
+                        "Markdown image locator does not cover its authoritative object".to_owned(),
+                    )
+                    .into());
+                }
+                materialized
+                    .registry
+                    .grant_object(object_hash, record.byte_length)?
+            }
+            _ => {
+                return Err(AdapterError::InvalidInput(
+                    "Markdown image is not available in the project resource closure".to_owned(),
+                )
+                .into());
+            }
+        };
+        let mut source_bytes = Vec::new();
+        materialized
+            .registry
+            .open_object(&source)?
+            .read_to_end(&mut source_bytes)?;
+        let bytes = match overlays.get(&ResourceId::from_bytes(resource.resource_id)) {
+            Some(layers) => {
+                compose_markdown_image_overlays(&source_bytes, layers, &materialized.registry)?
+            }
+            None => source_bytes,
+        };
+        pending.push((target, bytes));
+    }
+    for (target, bytes) in pending {
+        let target_parent = target.parent().ok_or_else(|| {
+            AdapterError::InvalidInput("Markdown image export path has no parent".to_owned())
+        })?;
+        fs::create_dir_all(target_parent)?;
+        let mut writer = OpenOptions::new()
+            .write(true)
+            .create_new(true)
+            .open(&target)?;
+        writer.write_all(&bytes)?;
+        writer.flush()?;
+    }
+    Ok(())
+}
+
+fn compose_markdown_image_overlays(
+    source_bytes: &[u8],
+    overlays: &[&ImageOverlay],
+    registry: &CapabilityRegistry,
+) -> Result<Vec<u8>, KernelError> {
+    let format = image::guess_format(source_bytes).map_err(|error| {
+        AdapterError::InvalidInput(format!("unsupported Markdown image: {error}"))
+    })?;
+    let mut composed = image::load_from_memory(source_bytes)
+        .map_err(|error| AdapterError::InvalidInput(format!("invalid Markdown image: {error}")))?
+        .to_rgba8();
+    for overlay in overlays {
+        let Locator::SpatialRegion { polygon, .. } = &overlay.region_locator else {
+            return Err(AdapterError::InvalidInput(
+                "Markdown image overlay requires a spatial region locator".to_owned(),
+            )
+            .into());
+        };
+        let mut derived_bytes = Vec::new();
+        registry
+            .open_object(&overlay.derived_object)?
+            .read_to_end(&mut derived_bytes)?;
+        let derived = image::load_from_memory(&derived_bytes)
+            .map_err(|error| AdapterError::InvalidInput(format!("invalid derived image: {error}")))?
+            .to_rgba8();
+        if derived.dimensions() != composed.dimensions() {
+            return Err(AdapterError::InvalidInput(
+                "derived image dimensions do not match the Markdown source image".to_owned(),
+            )
+            .into());
+        }
+        for y in 0..composed.height() {
+            for x in 0..composed.width() {
+                if image_point_in_polygon(x as f32 + 0.5, y as f32 + 0.5, polygon) {
+                    *composed.get_pixel_mut(x, y) = *derived.get_pixel(x, y);
+                }
+            }
+        }
+    }
+    let mut output = Vec::new();
+    image::DynamicImage::ImageRgba8(composed)
+        .write_to(&mut Cursor::new(&mut output), format)
+        .map_err(|error| {
+            AdapterError::InvalidInput(format!("cannot encode Markdown image: {error}"))
+        })?;
+    Ok(output)
+}
+
+fn image_point_in_polygon(x: f32, y: f32, polygon: &[[f32; 2]]) -> bool {
+    if polygon.len() < 3 {
+        return false;
+    }
+    let mut inside = false;
+    let mut previous = polygon.len() - 1;
+    for current in 0..polygon.len() {
+        let [current_x, current_y] = polygon[current];
+        let [previous_x, previous_y] = polygon[previous];
+        if (current_y > y) != (previous_y > y) {
+            let intersection =
+                (previous_x - current_x) * (y - current_y) / (previous_y - current_y) + current_x;
+            if x < intersection {
+                inside = !inside;
+            }
+        }
+        previous = current;
+    }
+    inside
 }
 
 #[cfg(test)]
@@ -1173,8 +1543,20 @@ pub enum KernelError {
     TxtValidationFailed(usize),
     #[error("workbench projection is invalid: {0}")]
     InvalidWorkbenchProjection(String),
+    #[error("workspace mutation is invalid: {0}")]
+    InvalidWorkspaceMutation(String),
     #[error("translation work item was not found")]
     WorkItemNotFound,
+    #[error("translation revision conflict")]
+    RevisionConflict,
+    #[error("translation history has no valid target for this operation")]
+    HistoryUnavailable,
+    #[error("translation document is invalid: {0}")]
+    InvalidTranslationDocument(String),
+    #[error("image rendering failed: {0}")]
+    Image(#[from] babel_image::RenderError),
+    #[error("image preview resource is invalid: {0}")]
+    InvalidImagePreview(String),
 }
 
 pub struct Kernel {
@@ -1192,6 +1574,8 @@ impl Kernel {
         let root = root.as_ref().to_owned();
         fs::create_dir_all(root.join("objects"))?;
         fs::create_dir_all(root.join("staging"))?;
+        fs::create_dir_all(root.join("workspace"))?;
+        fs::create_dir_all(root.join("recycle"))?;
         fs::create_dir_all(root.join("runtime"))?;
         fs::create_dir_all(root.join("diagnostics"))?;
         let project_lock = OpenOptions::new()
@@ -1210,8 +1594,9 @@ impl Kernel {
         }
         cas::cleanup_temporary(&root.join("objects"))?;
 
-        let store = ProjectStore::open(root.join("project.sqlite3"))?;
+        let mut store = ProjectStore::open(root.join("project.sqlite3"))?;
         store.recover_interrupted_tasks(now_millis()?)?;
+        recover_workspace_operations(&mut store, &root, now_millis()?)?;
         let project_id = store.project_id()?;
         let (interactive_tx, interactive_rx) = mpsc::sync_channel(WRITER_QUEUE_CAPACITY);
         let (background_tx, background_rx) = mpsc::sync_channel(WRITER_QUEUE_CAPACITY);
@@ -1239,6 +1624,139 @@ impl Kernel {
             subscribers,
             writer: Some(writer),
         })
+    }
+
+    /// Read and re-verify an immutable CAS object before handing it to a
+    /// renderer or exporter. Callers never receive an unverified path.
+    pub fn read_object(&self, hash: [u8; 32]) -> Result<Vec<u8>, KernelError> {
+        let path = cas_path(&self.root.join("objects"), &hash);
+        cas::verify_object(&path, &hash)?;
+        Ok(fs::read(path)?)
+    }
+
+    /// Read an image through its generation locator and return bounded,
+    /// verified preview bytes. Filesystem and archive paths stay inside core.
+    pub fn read_image_preview(
+        &self,
+        generation_id: [u8; 16],
+        resource_id: [u8; 16],
+    ) -> Result<ImagePreview, KernelError> {
+        let query = self.query()?;
+        let resource = query
+            .generation_resource(&generation_id, &resource_id)?
+            .ok_or_else(|| {
+                KernelError::InvalidImagePreview("image resource not found".to_owned())
+            })?;
+        if resource.kind != "Image" {
+            return Err(KernelError::InvalidImagePreview(
+                "resource is not an image".to_owned(),
+            ));
+        }
+        let locator: Locator = serde_json::from_slice(&resource.locator_json)
+            .map_err(|error| KernelError::InvalidImagePreview(error.to_string()))?;
+        let (source_hash, bytes) = match locator {
+            Locator::ByteSpan {
+                object_hash,
+                start,
+                end,
+            } => {
+                let object = self.read_object(object_hash)?;
+                let start = usize::try_from(start).map_err(|_| {
+                    KernelError::InvalidImagePreview("image range overflows usize".to_owned())
+                })?;
+                let end = usize::try_from(end).map_err(|_| {
+                    KernelError::InvalidImagePreview("image range overflows usize".to_owned())
+                })?;
+                if start > end || end > object.len() {
+                    return Err(KernelError::InvalidImagePreview(
+                        "image byte range is outside the verified object".to_owned(),
+                    ));
+                }
+                (object_hash, object[start..end].to_vec())
+            }
+            Locator::ArchiveMemberByteSpan {
+                object_hash,
+                member_path,
+                start,
+                end,
+            } => {
+                let object = self.read_object(object_hash)?;
+                let mut archive = zip::ZipArchive::new(Cursor::new(object)).map_err(|error| {
+                    KernelError::InvalidImagePreview(format!("invalid archive: {error}"))
+                })?;
+                let mut member = archive.by_name(&member_path).map_err(|error| {
+                    KernelError::InvalidImagePreview(format!("image member not found: {error}"))
+                })?;
+                let member_size = usize::try_from(member.size()).map_err(|_| {
+                    KernelError::InvalidImagePreview("image member is too large".to_owned())
+                })?;
+                if member_size > MAX_IMAGE_PREVIEW_BYTES {
+                    return Err(KernelError::InvalidImagePreview(
+                        "image member exceeds preview limit".to_owned(),
+                    ));
+                }
+                let mut member_bytes = Vec::with_capacity(member_size);
+                member.read_to_end(&mut member_bytes)?;
+                let start = usize::try_from(start).map_err(|_| {
+                    KernelError::InvalidImagePreview("image range overflows usize".to_owned())
+                })?;
+                let end = usize::try_from(end).map_err(|_| {
+                    KernelError::InvalidImagePreview("image range overflows usize".to_owned())
+                })?;
+                if start > end || end > member_bytes.len() {
+                    return Err(KernelError::InvalidImagePreview(
+                        "image member range is invalid".to_owned(),
+                    ));
+                }
+                (object_hash, member_bytes[start..end].to_vec())
+            }
+            _ => {
+                return Err(KernelError::InvalidImagePreview(
+                    "image locator is not a byte or archive-member locator".to_owned(),
+                ));
+            }
+        };
+        if bytes.is_empty() || bytes.len() > MAX_IMAGE_PREVIEW_BYTES {
+            return Err(KernelError::InvalidImagePreview(
+                "image preview size is outside the allowed range".to_owned(),
+            ));
+        }
+        let format = image::guess_format(&bytes).map_err(|error| {
+            KernelError::InvalidImagePreview(format!("unsupported image: {error}"))
+        })?;
+        let media_type = match format {
+            image::ImageFormat::Png => "image/png",
+            image::ImageFormat::Jpeg => "image/jpeg",
+            image::ImageFormat::WebP => "image/webp",
+            _ => {
+                return Err(KernelError::InvalidImagePreview(
+                    "only PNG, JPEG and WebP previews are supported".to_owned(),
+                ));
+            }
+        };
+        Ok(ImagePreview {
+            media_type: media_type.to_owned(),
+            byte_length: bytes.len(),
+            source_hash,
+            data_base64: BASE64.encode(bytes),
+        })
+    }
+
+    pub fn render_image_region(
+        &self,
+        source_hash: [u8; 32],
+        polygon: &babel_image::SpatialPolygon,
+        translation: &str,
+        style: &babel_image::RenderStyle,
+    ) -> Result<babel_image::RenderedImage, KernelError> {
+        let bytes = self.read_object(source_hash)?;
+        Ok(babel_image::render_png(
+            &bytes,
+            source_hash,
+            polygon,
+            translation,
+            style,
+        )?)
     }
 
     pub const fn project_id(&self) -> ProjectId {
@@ -1277,6 +1795,55 @@ impl Kernel {
         }
     }
 
+    pub fn save_translation_document(
+        &self,
+        source_unit_key: [u8; 32],
+        command_id: [u8; 32],
+        expected_revision_id: Option<i64>,
+        document: TranslationDocumentV1,
+        created_at_ms: i64,
+    ) -> Result<SaveReceipt, KernelError> {
+        document
+            .validate()
+            .map_err(|error| KernelError::InvalidTranslationDocument(error.to_string()))?;
+        let response = self.request(
+            &self.interactive,
+            Command::SaveTranslationDocument {
+                source_unit_key,
+                command_id,
+                expected_revision_id,
+                document,
+                created_at_ms,
+            },
+        )?;
+        match response {
+            Response::Saved(receipt) => Ok(receipt),
+            _ => Err(KernelError::UnexpectedResponse),
+        }
+    }
+
+    pub fn save_image_region_edit(
+        &self,
+        request: SaveImageRegionEditRequest,
+    ) -> Result<SaveReceipt, KernelError> {
+        let response = self.request(&self.interactive, Command::SaveImageRegionEdit { request })?;
+        match response {
+            Response::Saved(receipt) => Ok(receipt),
+            _ => Err(KernelError::UnexpectedResponse),
+        }
+    }
+
+    pub fn save_ocr_candidate(
+        &self,
+        request: SaveOcrCandidateRequest,
+    ) -> Result<bool, KernelError> {
+        let response = self.request(&self.interactive, Command::SaveOcrCandidate { request })?;
+        match response {
+            Response::OcrCandidateSaved { replayed } => Ok(replayed),
+            _ => Err(KernelError::UnexpectedResponse),
+        }
+    }
+
     pub fn restore_translation(
         &self,
         source_unit_key: [u8; 32],
@@ -1303,6 +1870,44 @@ impl Kernel {
         }
     }
 
+    pub fn undo_translation(
+        &self,
+        unit_id: UnitId,
+        command_id: [u8; 32],
+        created_at_ms: i64,
+    ) -> Result<SaveReceipt, KernelError> {
+        match self.request(
+            &self.interactive,
+            Command::UndoTranslation {
+                unit_id: *unit_id.as_bytes(),
+                command_id,
+                created_at_ms,
+            },
+        )? {
+            Response::Saved(receipt) => Ok(receipt),
+            _ => Err(KernelError::UnexpectedResponse),
+        }
+    }
+
+    pub fn redo_translation(
+        &self,
+        unit_id: UnitId,
+        command_id: [u8; 32],
+        created_at_ms: i64,
+    ) -> Result<SaveReceipt, KernelError> {
+        match self.request(
+            &self.interactive,
+            Command::RedoTranslation {
+                unit_id: *unit_id.as_bytes(),
+                command_id,
+                created_at_ms,
+            },
+        )? {
+            Response::Saved(receipt) => Ok(receipt),
+            _ => Err(KernelError::UnexpectedResponse),
+        }
+    }
+
     pub fn save_draft(
         &self,
         unit_id: Vec<u8>,
@@ -1323,6 +1928,20 @@ impl Kernel {
         )?;
         match response {
             Response::Done => Ok(()),
+            _ => Err(KernelError::UnexpectedResponse),
+        }
+    }
+
+    pub fn mutate_workspace(
+        &self,
+        request: WorkspaceMutationRequest,
+    ) -> Result<WorkspaceMutationReceipt, KernelError> {
+        let response = self.request(
+            &self.background,
+            Command::MutateWorkspace { request },
+        )?;
+        match response {
+            Response::WorkspaceMutated(receipt) => Ok(receipt),
             _ => Err(KernelError::UnexpectedResponse),
         }
     }
@@ -1411,6 +2030,46 @@ impl Kernel {
         self.import_format_reader(FormatKind::Markdown, source_id, reader, created_at_ms)
     }
 
+    pub fn import_markdown_path(
+        &self,
+        source_id: [u8; 16],
+        source_path: impl AsRef<Path>,
+        created_at_ms: i64,
+    ) -> Result<MarkdownImportReport, KernelError> {
+        let source_path = source_path.as_ref();
+        let import_started = Instant::now();
+        let mut source = File::open(source_path)?;
+        let published = self.publish_source_reader(
+            source_id,
+            FormatKind::Markdown.media_type().to_owned(),
+            &mut source,
+            created_at_ms,
+        )?;
+        let mut prepared = prepare_format_source_with_worker(
+            FormatKind::Markdown,
+            self.root.join("objects"),
+            published.hash,
+        )?;
+        attach_markdown_assets(
+            &mut prepared,
+            source_path,
+            self.root.join("objects"),
+            created_at_ms,
+        )?;
+        let response = self.request(
+            &self.background,
+            Command::CommitFormatImport {
+                prepared,
+                created_at_ms,
+            },
+        )?;
+        profile_import("import.markdown_path.total", import_started.elapsed());
+        match response {
+            Response::FormatImported(report) => Ok(report),
+            _ => Err(KernelError::UnexpectedResponse),
+        }
+    }
+
     pub fn import_epub_reader(
         &self,
         source_id: [u8; 16],
@@ -1465,6 +2124,16 @@ impl Kernel {
 
     pub fn validate_active_epub(&self) -> Result<Vec<EpubValidationIssue>, KernelError> {
         self.validate_active_format(FormatKind::Epub)
+    }
+
+    pub fn validate_active_format_id(&self, format_id: &str) -> Result<Vec<FormatValidationIssue>, KernelError> {
+        let format = match format_id {
+            "txt" => FormatKind::Txt,
+            "markdown" | "md" => FormatKind::Markdown,
+            "epub" => FormatKind::Epub,
+            other => return Err(KernelError::WorkerDiagnostic(format!("unsupported format: {other}"))),
+        };
+        self.validate_active_format(format)
     }
 
     fn validate_active_format(
@@ -1829,6 +2498,27 @@ impl Kernel {
         self.export_active_format_to_path(FormatKind::Epub, destination.as_ref().to_owned())
     }
 
+    pub fn export_active_markdown_to_path(
+        &self,
+        destination: impl AsRef<Path>,
+    ) -> Result<FormatFileExportReport, KernelError> {
+        self.export_active_format_to_path(FormatKind::Markdown, destination.as_ref().to_owned())
+    }
+
+    pub fn export_active_format_id_to_path(
+        &self,
+        format_id: &str,
+        destination: impl AsRef<Path>,
+    ) -> Result<FormatFileExportReport, KernelError> {
+        let format = match format_id {
+            "txt" => FormatKind::Txt,
+            "markdown" | "md" => FormatKind::Markdown,
+            "epub" => FormatKind::Epub,
+            other => return Err(KernelError::WorkerDiagnostic(format!("unsupported format: {other}"))),
+        };
+        self.export_active_format_to_path(format, destination.as_ref().to_owned())
+    }
+
     fn export_active_format(
         &self,
         expected_format: FormatKind,
@@ -2050,6 +2740,24 @@ impl Kernel {
         })
     }
 
+    pub fn image_region_edit(
+        &self,
+        unit_id: UnitId,
+    ) -> Result<Option<ImageRegionEditRecord>, KernelError> {
+        Ok(self.query()?.image_region_edit(unit_id.as_bytes())?)
+    }
+
+    pub fn ocr_candidate(
+        &self,
+        generation_id: [u8; 16],
+        region_resource_id: [u8; 16],
+        model_hash: [u8; 32],
+    ) -> Result<Option<OcrCandidateCacheRecord>, KernelError> {
+        Ok(self
+            .query()?
+            .ocr_candidate(&generation_id, &region_resource_id, &model_hash)?)
+    }
+
     fn request(
         &self,
         queue: &SyncSender<WriterMessage>,
@@ -2122,6 +2830,17 @@ fn assemble_work_item(
         }
     }
 
+    let translation_document = match record.translation_document_json.as_deref() {
+        Some(json) => {
+            let document: TranslationDocumentV1 = serde_json::from_slice(json)
+                .map_err(|error| KernelError::InvalidWorkbenchProjection(error.to_string()))?;
+            document
+                .validate()
+                .map_err(|error| KernelError::InvalidWorkbenchProjection(error.to_string()))?;
+            document
+        }
+        None => TranslationDocumentV1::from_plain_text(record.translation.as_deref().unwrap_or("")),
+    };
     let status = match record.translation.as_deref() {
         None | Some("") => TranslationStatus::Untranslated,
         Some(_) => TranslationStatus::Draft,
@@ -2136,6 +2855,7 @@ fn assemble_work_item(
         source,
         source_text: record.source_text,
         translation: record.translation,
+        translation_document,
         status,
         locator,
         reading_order: record.reading_order,
@@ -2177,12 +2897,35 @@ enum Command {
         text: String,
         created_at_ms: i64,
     },
+    SaveTranslationDocument {
+        source_unit_key: [u8; 32],
+        command_id: [u8; 32],
+        expected_revision_id: Option<i64>,
+        document: TranslationDocumentV1,
+        created_at_ms: i64,
+    },
+    SaveImageRegionEdit {
+        request: SaveImageRegionEditRequest,
+    },
+    SaveOcrCandidate {
+        request: SaveOcrCandidateRequest,
+    },
     RestoreTranslation {
         source_unit_key: [u8; 32],
         command_id: [u8; 32],
         expected_head_revision_id: i64,
         restores_revision_id: i64,
         kind: RevisionKind,
+        created_at_ms: i64,
+    },
+    UndoTranslation {
+        unit_id: [u8; 16],
+        command_id: [u8; 32],
+        created_at_ms: i64,
+    },
+    RedoTranslation {
+        unit_id: [u8; 16],
+        command_id: [u8; 32],
         created_at_ms: i64,
     },
     SaveDraft {
@@ -2197,6 +2940,9 @@ enum Command {
         client_session_id: String,
         position_sequence: u64,
         updated_at_ms: i64,
+    },
+    MutateWorkspace {
+        request: WorkspaceMutationRequest,
     },
     RegisterSourceObject {
         source_id: [u8; 16],
@@ -2331,7 +3077,9 @@ enum Command {
 
 enum Response {
     Saved(SaveReceipt),
+    OcrCandidateSaved { replayed: bool },
     NavigationSaved(NavigationSaveReceipt),
+    WorkspaceMutated(WorkspaceMutationReceipt),
     Task(TaskRecord),
     Diagnostic(i64),
     GarbageCollected(GcReport),
@@ -2464,6 +3212,58 @@ fn execute(
             }
             Ok(Response::Saved(receipt))
         }
+        Command::SaveTranslationDocument {
+            source_unit_key,
+            command_id,
+            expected_revision_id,
+            document,
+            created_at_ms,
+        } => {
+            let text = document.plain_text();
+            let document_json = serde_json::to_vec(&document)
+                .map_err(|error| KernelError::InvalidTranslationDocument(error.to_string()))?;
+            let receipt = store
+                .save_translation_document(
+                    &source_unit_key,
+                    &command_id,
+                    &text,
+                    i64::from(document.schema_version),
+                    &document_json,
+                    expected_revision_id,
+                    created_at_ms,
+                )
+                .map_err(|error| match error {
+                    rusqlite::Error::InvalidQuery => KernelError::RevisionConflict,
+                    other => KernelError::Storage(other),
+                })?;
+            if !receipt.replayed {
+                publish_event(
+                    subscribers,
+                    CommitEvent::TranslationCommitted {
+                        revision_id: receipt.revision_id,
+                        commit_sequence: receipt.commit_sequence,
+                    },
+                );
+            }
+            Ok(Response::Saved(receipt))
+        }
+        Command::SaveImageRegionEdit { request } => {
+            let receipt = store.save_image_region_edit(&request)?;
+            if !receipt.replayed {
+                publish_event(
+                    subscribers,
+                    CommitEvent::ImageRegionCommitted {
+                        revision_id: receipt.revision_id,
+                        commit_sequence: receipt.commit_sequence,
+                    },
+                );
+            }
+            Ok(Response::Saved(receipt))
+        }
+        Command::SaveOcrCandidate { request } => {
+            let replayed = store.save_ocr_candidate(&request)?;
+            Ok(Response::OcrCandidateSaved { replayed })
+        }
         Command::RestoreTranslation {
             source_unit_key,
             command_id,
@@ -2480,6 +3280,54 @@ fn execute(
                 kind,
                 created_at_ms,
             )?;
+            if !receipt.replayed {
+                publish_event(
+                    subscribers,
+                    CommitEvent::TranslationCommitted {
+                        revision_id: receipt.revision_id,
+                        commit_sequence: receipt.commit_sequence,
+                    },
+                );
+            }
+            Ok(Response::Saved(receipt))
+        }
+        Command::UndoTranslation {
+            unit_id,
+            command_id,
+            created_at_ms,
+        } => {
+            let receipt = store
+                .undo_translation(&unit_id, &command_id, created_at_ms)
+                .map_err(|error| match error {
+                    rusqlite::Error::InvalidQuery | rusqlite::Error::QueryReturnedNoRows => {
+                        KernelError::HistoryUnavailable
+                    }
+                    other => KernelError::Storage(other),
+                })?;
+            if !receipt.replayed {
+                publish_event(
+                    subscribers,
+                    CommitEvent::TranslationCommitted {
+                        revision_id: receipt.revision_id,
+                        commit_sequence: receipt.commit_sequence,
+                    },
+                );
+            }
+            Ok(Response::Saved(receipt))
+        }
+        Command::RedoTranslation {
+            unit_id,
+            command_id,
+            created_at_ms,
+        } => {
+            let receipt = store
+                .redo_translation(&unit_id, &command_id, created_at_ms)
+                .map_err(|error| match error {
+                    rusqlite::Error::InvalidQuery | rusqlite::Error::QueryReturnedNoRows => {
+                        KernelError::HistoryUnavailable
+                    }
+                    other => KernelError::Storage(other),
+                })?;
             if !receipt.replayed {
                 publish_event(
                     subscribers,
@@ -2517,6 +3365,12 @@ fn execute(
             &client_session_id,
             position_sequence,
             updated_at_ms,
+        )?)),
+        Command::MutateWorkspace { request } => Ok(Response::WorkspaceMutated(mutate_workspace(
+            root,
+            store,
+            request,
+            now_millis().map_err(KernelError::Clock)?,
         )?)),
         Command::RegisterSourceObject {
             source_id,
@@ -3139,6 +3993,587 @@ fn cas_path(object_root: &Path, hash: &[u8; 32]) -> PathBuf {
         .join(&encoded[2..])
 }
 
+const WORKSPACE_ROOT_NODE_ID: &str = "workspace-root";
+const RECYCLE_ROOT_NODE_ID: &str = "recycle-root";
+
+#[derive(Clone, Copy, Debug, PartialEq, Eq)]
+enum WorkspaceNodeKind {
+    Source,
+    Workspace,
+    Recycle,
+    Derived,
+}
+
+struct ResolvedWorkspaceNode {
+    kind: WorkspaceNodeKind,
+    path: PathBuf,
+}
+
+fn workspace_root_path(root: &Path) -> PathBuf {
+    root.join("workspace")
+}
+
+fn recycle_root_path(root: &Path) -> PathBuf {
+    root.join("recycle")
+}
+
+fn resolve_workspace_node(root: &Path, node_id: &str) -> Result<ResolvedWorkspaceNode, KernelError> {
+    if node_id == WORKSPACE_ROOT_NODE_ID {
+        return Ok(ResolvedWorkspaceNode {
+            kind: WorkspaceNodeKind::Workspace,
+            path: workspace_root_path(root),
+        });
+    }
+    if node_id == RECYCLE_ROOT_NODE_ID {
+        return Ok(ResolvedWorkspaceNode {
+            kind: WorkspaceNodeKind::Recycle,
+            path: recycle_root_path(root),
+        });
+    }
+    if let Some(relative) = node_id.strip_prefix("workspace/").or_else(|| node_id.strip_prefix("workspace:")) {
+        return resolve_scoped_node(root, WorkspaceNodeKind::Workspace, relative);
+    }
+    if let Some(relative) = node_id.strip_prefix("recycle/").or_else(|| node_id.strip_prefix("recycle:")) {
+        return resolve_scoped_node(root, WorkspaceNodeKind::Recycle, relative);
+    }
+    if node_id.len() == 32 && node_id.chars().all(|value| value.is_ascii_hexdigit()) {
+        return Ok(ResolvedWorkspaceNode {
+            kind: WorkspaceNodeKind::Source,
+            path: root.join("source").join(node_id),
+        });
+    }
+    if node_id == "source-root" {
+        return Ok(ResolvedWorkspaceNode {
+            kind: WorkspaceNodeKind::Source,
+            path: root.join("source"),
+        });
+    }
+    if node_id == "derived-root" {
+        return Ok(ResolvedWorkspaceNode {
+            kind: WorkspaceNodeKind::Derived,
+            path: root.join("derived"),
+        });
+    }
+    if let Some(relative) = node_id.strip_prefix("derived/").or_else(|| node_id.strip_prefix("derived:")) {
+        return resolve_scoped_node(root, WorkspaceNodeKind::Derived, relative);
+    }
+    Err(KernelError::InvalidWorkspaceMutation(format!(
+        "unrecognized node id: {node_id}"
+    )))
+}
+
+fn resolve_scoped_node(
+    root: &Path,
+    kind: WorkspaceNodeKind,
+    relative: &str,
+) -> Result<ResolvedWorkspaceNode, KernelError> {
+    let relative_path = validate_relative_workspace_path(relative)?;
+    let base = match kind {
+        WorkspaceNodeKind::Workspace => workspace_root_path(root),
+        WorkspaceNodeKind::Recycle => recycle_root_path(root),
+        WorkspaceNodeKind::Source => root.join("source"),
+        WorkspaceNodeKind::Derived => root.join("derived"),
+    };
+    Ok(ResolvedWorkspaceNode {
+        kind,
+        path: base.join(&relative_path),
+    })
+}
+
+fn validate_relative_workspace_path(relative: &str) -> Result<PathBuf, KernelError> {
+    let path = Path::new(relative);
+    if relative.is_empty()
+        || path.is_absolute()
+        || path.components().any(|component| {
+            matches!(
+                component,
+                std::path::Component::ParentDir
+                    | std::path::Component::RootDir
+                    | std::path::Component::Prefix(_)
+            )
+        })
+    {
+        return Err(KernelError::InvalidWorkspaceMutation(format!(
+            "invalid relative path: {relative}"
+        )));
+    }
+    Ok(path.to_owned())
+}
+
+fn normalize_relative_path(path: &Path) -> String {
+    path.iter()
+        .map(|component| component.to_string_lossy())
+        .collect::<Vec<_>>()
+        .join("/")
+}
+
+fn reject_symlink_ancestors(path: &Path) -> Result<(), KernelError> {
+    let mut current = PathBuf::new();
+    for component in path.components() {
+        current.push(component.as_os_str());
+        if let Ok(metadata) = fs::symlink_metadata(&current) {
+            if metadata.file_type().is_symlink() {
+                return Err(KernelError::InvalidWorkspaceMutation(format!(
+                    "path escapes through symlink: {}",
+                    current.display()
+                )));
+            }
+        }
+    }
+    Ok(())
+}
+
+fn relative_to_workspace_root(root: &Path, path: &Path) -> Result<PathBuf, KernelError> {
+    let workspace_root = workspace_root_path(root);
+    let recycle_root = recycle_root_path(root);
+    if let Ok(relative) = path.strip_prefix(&workspace_root) {
+        Ok(PathBuf::from("workspace").join(relative))
+    } else if let Ok(relative) = path.strip_prefix(&recycle_root) {
+        Ok(PathBuf::from("recycle").join(relative))
+    } else {
+        Err(KernelError::InvalidWorkspaceMutation(format!(
+            "path is outside the project workspace: {}",
+            path.display()
+        )))
+    }
+}
+
+fn workspace_node_id_from_path(root: &Path, path: &Path) -> Result<String, KernelError> {
+    Ok(normalize_relative_path(&relative_to_workspace_root(root, path)?))
+}
+
+fn record_workspace_operation(
+    store: &ProjectStore,
+    request: &RecordWorkspaceOperationRequest,
+) -> rusqlite::Result<()> {
+    store.record_workspace_operation(request)
+}
+
+fn finish_workspace_operation(
+    store: &ProjectStore,
+    request: &FinishWorkspaceOperationRequest,
+) -> rusqlite::Result<()> {
+    store.finish_workspace_operation(request)
+}
+
+fn recover_workspace_operations(
+    store: &mut ProjectStore,
+    root: &Path,
+    recovered_at_ms: i64,
+) -> Result<(), KernelError> {
+    let pending = store
+        .workspace_operations_in_state(WorkspaceOperationState::Preparing)
+        .map_err(KernelError::Storage)?;
+    for record in pending {
+        let mut finish = FinishWorkspaceOperationRequest {
+            operation_id: record.operation_id.clone(),
+            state: WorkspaceOperationState::CancelledAfterCrash,
+            commit_sequence: None,
+            error: record.error.clone(),
+            completed_at_ms: recovered_at_ms,
+        };
+        match record.kind.as_str() {
+            "create-folder" => {
+                if let Some(target_path) = &record.target_path {
+                    let path = root.join(target_path);
+                    if path.is_dir() {
+                        finish.state = WorkspaceOperationState::Completed;
+                    }
+                }
+            }
+            "rename" | "move" => {
+                if let (Some(source_path), Some(target_path)) =
+                    (&record.source_path, &record.target_path)
+                {
+                    let source = root.join(source_path);
+                    let target = root.join(target_path);
+                    if target.exists() && !source.exists() {
+                        finish.state = WorkspaceOperationState::Completed;
+                    }
+                }
+            }
+            "trash" => {
+                if let Some(recycle_path) = &record.recycle_path {
+                    let recycle = root.join(recycle_path);
+                    let source_exists = record
+                        .source_path
+                        .as_deref()
+                        .map(|path| root.join(path).exists())
+                        .unwrap_or(false);
+                    if recycle.exists() && !source_exists {
+                        finish.state = WorkspaceOperationState::Completed;
+                    }
+                }
+            }
+            "restore" => {
+                if let (Some(source_path), Some(target_path)) =
+                    (&record.source_path, &record.target_path)
+                {
+                    let source = root.join(source_path);
+                    let target = root.join(target_path);
+                    if target.exists() && !source.exists() {
+                        finish.state = WorkspaceOperationState::Completed;
+                    }
+                }
+            }
+            "reveal" => {
+                finish.state = WorkspaceOperationState::Completed;
+            }
+            _ => {
+                finish.state = WorkspaceOperationState::Failed;
+                finish.error = Some("unknown workspace operation".to_owned());
+            }
+        }
+        if finish.state == WorkspaceOperationState::Completed {
+            if finish.commit_sequence.is_none() {
+                let commit_sequence = store
+                    .complete_workspace_operation(&finish.operation_id, recovered_at_ms)
+                    .map_err(KernelError::Storage)?;
+                finish.commit_sequence = Some(commit_sequence);
+            }
+        } else {
+            finish_workspace_operation(store, &finish).map_err(KernelError::Storage)?;
+        }
+    }
+    Ok(())
+}
+
+fn mutate_workspace(
+    root: &Path,
+    store: &mut ProjectStore,
+    request: WorkspaceMutationRequest,
+    created_at_ms: i64,
+) -> Result<WorkspaceMutationReceipt, KernelError> {
+    let operation_id = hex::encode(TaskId::new().as_bytes());
+    let mut affected_node_ids = Vec::new();
+    let mut record = RecordWorkspaceOperationRequest {
+        operation_id: operation_id.clone(),
+        kind: String::new(),
+        source_node_id: None,
+        target_node_id: None,
+        source_path: None,
+        target_path: None,
+        recycle_path: None,
+        created_at_ms,
+    };
+
+    let result: Result<(), KernelError> = match request {
+        WorkspaceMutationRequest::CreateFolder {
+            project_id,
+            parent_id,
+            name,
+        } => {
+            ensure_project_matches(store, &project_id)?;
+            let parent = resolve_workspace_node(root, &parent_id)?;
+            if parent.kind != WorkspaceNodeKind::Workspace {
+                return Err(KernelError::InvalidWorkspaceMutation(
+                    "folders can only be created under the workspace root".to_owned(),
+                ));
+            }
+            validate_workspace_entry_name(&name)?;
+            let target_path = parent.path.join(&name);
+            reject_symlink_ancestors(&target_path.parent().unwrap_or(&target_path).to_path_buf())?;
+            record.kind = "create-folder".to_owned();
+            record.target_node_id = Some(format!(
+                "workspace/{}",
+                normalize_relative_path(
+                    &target_path
+                        .strip_prefix(workspace_root_path(root))
+                        .map_err(|_| KernelError::InvalidWorkspaceMutation(
+                            "target escaped workspace root".to_owned()
+                        ))?
+                        .to_owned()
+                )
+            ));
+            record.target_path = Some(
+                relative_to_workspace_root(root, &target_path)?
+                    .to_string_lossy()
+                    .into_owned(),
+            );
+            record_workspace_operation(store, &record).map_err(KernelError::Storage)?;
+            fs::create_dir_all(&target_path)?;
+            affected_node_ids.push(record.target_node_id.clone().unwrap());
+            Ok(())
+        }
+        WorkspaceMutationRequest::Rename {
+            project_id,
+            node_id,
+            name,
+        } => {
+            ensure_project_matches(store, &project_id)?;
+            let source = resolve_workspace_node(root, &node_id)?;
+            if source.kind != WorkspaceNodeKind::Workspace {
+                return Err(KernelError::InvalidWorkspaceMutation(
+                    "only workspace items can be renamed".to_owned(),
+                ));
+            }
+            validate_workspace_entry_name(&name)?;
+            let parent = source.path.parent().ok_or_else(|| {
+                KernelError::InvalidWorkspaceMutation("source path has no parent".to_owned())
+            })?;
+            reject_symlink_ancestors(parent)?;
+            let target_path = parent.join(&name);
+            record.kind = "rename".to_owned();
+            record.source_node_id = Some(node_id.clone());
+            record.target_node_id = Some(format!(
+                "workspace/{}",
+                normalize_relative_path(
+                    &target_path
+                        .strip_prefix(workspace_root_path(root))
+                        .map_err(|_| KernelError::InvalidWorkspaceMutation(
+                            "target escaped workspace root".to_owned()
+                        ))?
+                        .to_owned()
+                )
+            ));
+            record.source_path = Some(
+                relative_to_workspace_root(root, &source.path)?
+                    .to_string_lossy()
+                    .into_owned(),
+            );
+            record.target_path = Some(
+                relative_to_workspace_root(root, &target_path)?
+                    .to_string_lossy()
+                    .into_owned(),
+            );
+            record_workspace_operation(store, &record).map_err(KernelError::Storage)?;
+            fs::rename(&source.path, &target_path)?;
+            affected_node_ids.push(node_id);
+            affected_node_ids.push(record.target_node_id.clone().unwrap());
+            Ok(())
+        }
+        WorkspaceMutationRequest::Move {
+            project_id,
+            node_id,
+            parent_id,
+        } => {
+            ensure_project_matches(store, &project_id)?;
+            let source = resolve_workspace_node(root, &node_id)?;
+            if source.kind != WorkspaceNodeKind::Workspace {
+                return Err(KernelError::InvalidWorkspaceMutation(
+                    "only workspace items can be moved".to_owned(),
+                ));
+            }
+            let parent = resolve_workspace_node(root, &parent_id)?;
+            if parent.kind != WorkspaceNodeKind::Workspace {
+                return Err(KernelError::InvalidWorkspaceMutation(
+                    "workspace items can only be moved inside the workspace".to_owned(),
+                ));
+            }
+            reject_symlink_ancestors(&parent.path)?;
+            let file_name = source.path.file_name().ok_or_else(|| {
+                KernelError::InvalidWorkspaceMutation("source path has no file name".to_owned())
+            })?;
+            let target_path = parent.path.join(file_name);
+            record.kind = "move".to_owned();
+            record.source_node_id = Some(node_id.clone());
+            record.target_node_id = Some(format!(
+                "workspace/{}",
+                normalize_relative_path(
+                    &target_path
+                        .strip_prefix(workspace_root_path(root))
+                        .map_err(|_| KernelError::InvalidWorkspaceMutation(
+                            "target escaped workspace root".to_owned()
+                        ))?
+                        .to_owned()
+                )
+            ));
+            record.source_path = Some(
+                relative_to_workspace_root(root, &source.path)?
+                    .to_string_lossy()
+                    .into_owned(),
+            );
+            record.target_path = Some(
+                relative_to_workspace_root(root, &target_path)?
+                    .to_string_lossy()
+                    .into_owned(),
+            );
+            record_workspace_operation(store, &record).map_err(KernelError::Storage)?;
+            fs::rename(&source.path, &target_path)?;
+            affected_node_ids.push(node_id);
+            affected_node_ids.push(record.target_node_id.clone().unwrap());
+            Ok(())
+        }
+        WorkspaceMutationRequest::Trash { project_id, node_id } => {
+            ensure_project_matches(store, &project_id)?;
+            let source = resolve_workspace_node(root, &node_id)?;
+            if source.kind != WorkspaceNodeKind::Workspace {
+                return Err(KernelError::InvalidWorkspaceMutation(
+                    "only workspace items can be moved to the recycle bin".to_owned(),
+                ));
+            }
+            let relative = source
+                .path
+                .strip_prefix(workspace_root_path(root))
+                .map_err(|_| KernelError::InvalidWorkspaceMutation(
+                    "source escaped workspace root".to_owned(),
+                ))?
+                .to_owned();
+            let recycle_path = recycle_root_path(root)
+                .join(&operation_id)
+                .join(&relative);
+            if let Some(parent) = recycle_path.parent() {
+                reject_symlink_ancestors(parent)?;
+                fs::create_dir_all(parent)?;
+            }
+            record.kind = "trash".to_owned();
+            record.source_node_id = Some(node_id.clone());
+            record.source_path = Some(
+                relative_to_workspace_root(root, &source.path)?
+                    .to_string_lossy()
+                    .into_owned(),
+            );
+            record.recycle_path = Some(
+                relative_to_workspace_root(root, &recycle_path)?
+                    .to_string_lossy()
+                    .into_owned(),
+            );
+            record_workspace_operation(store, &record).map_err(KernelError::Storage)?;
+            fs::rename(&source.path, &recycle_path)?;
+            affected_node_ids.push(node_id);
+            affected_node_ids.push(format!(
+                "recycle/{}/{}",
+                operation_id,
+                normalize_relative_path(&relative)
+            ));
+            Ok(())
+        }
+        WorkspaceMutationRequest::Restore { project_id, node_id } => {
+            ensure_project_matches(store, &project_id)?;
+            let source = resolve_workspace_node(root, &node_id)?;
+            if source.kind != WorkspaceNodeKind::Recycle {
+                return Err(KernelError::InvalidWorkspaceMutation(
+                    "only recycle items can be restored".to_owned(),
+                ));
+            }
+            let trash = store
+                .workspace_operations_in_state(WorkspaceOperationState::Completed)
+                .map_err(KernelError::Storage)?
+                .into_iter()
+                .rev()
+                .find(|record| {
+                    record.kind == "trash"
+                        && record
+                            .recycle_path
+                            .as_deref()
+                            .map(|path| root.join(path) == source.path)
+                            .unwrap_or(false)
+                })
+                .ok_or_else(|| {
+                    KernelError::InvalidWorkspaceMutation(
+                        "restore target has no matching trash log entry".to_owned(),
+                    )
+                })?;
+            let target_path = trash.source_path.as_ref().ok_or_else(|| {
+                KernelError::InvalidWorkspaceMutation("trash log is missing original path".to_owned())
+            })?;
+            let target_path = root.join(target_path);
+            if let Some(parent) = target_path.parent() {
+                reject_symlink_ancestors(parent)?;
+                fs::create_dir_all(parent)?;
+            }
+            record.kind = "restore".to_owned();
+            record.source_node_id = Some(node_id.clone());
+            record.target_node_id = Some(workspace_node_id_from_path(root, &target_path)?);
+            record.source_path = Some(
+                relative_to_workspace_root(root, &source.path)?
+                    .to_string_lossy()
+                    .into_owned(),
+            );
+            record.target_path = Some(
+                relative_to_workspace_root(root, &target_path)?
+                    .to_string_lossy()
+                    .into_owned(),
+            );
+            record_workspace_operation(store, &record).map_err(KernelError::Storage)?;
+            fs::rename(&source.path, &target_path)?;
+            affected_node_ids.push(node_id);
+            affected_node_ids.push(record.target_node_id.clone().unwrap());
+            Ok(())
+        }
+        WorkspaceMutationRequest::Reveal { project_id, node_id } => {
+            ensure_project_matches(store, &project_id)?;
+            let node = resolve_workspace_node(root, &node_id)?;
+            match node.kind {
+                WorkspaceNodeKind::Source | WorkspaceNodeKind::Workspace | WorkspaceNodeKind::Recycle | WorkspaceNodeKind::Derived => {}
+            }
+            if !node.path.exists() {
+                return Err(KernelError::InvalidWorkspaceMutation(format!(
+                    "path does not exist: {}",
+                    node.path.display()
+                )));
+            }
+            record.kind = "reveal".to_owned();
+            record.source_node_id = Some(node_id.clone());
+            record.source_path = Some(
+                relative_to_workspace_root(root, &node.path)?
+                    .to_string_lossy()
+                    .into_owned(),
+            );
+            record_workspace_operation(store, &record).map_err(KernelError::Storage)?;
+            affected_node_ids.push(node_id);
+            Ok(())
+        }
+    };
+
+    match result {
+        Ok(()) => {
+            let commit_sequence = store
+                .complete_workspace_operation(&operation_id, created_at_ms)
+                .map_err(KernelError::Storage)?;
+            Ok(WorkspaceMutationReceipt {
+                operation_id,
+                commit_sequence,
+                affected_node_ids,
+            })
+        }
+        Err(error) => {
+            let _ = finish_workspace_operation(
+                store,
+                &FinishWorkspaceOperationRequest {
+                    operation_id,
+                    state: WorkspaceOperationState::Failed,
+                    commit_sequence: None,
+                    error: Some(error.to_string()),
+                    completed_at_ms: created_at_ms,
+                },
+            );
+            Err(error)
+        }
+    }
+}
+
+fn validate_workspace_entry_name(name: &str) -> Result<(), KernelError> {
+    let path = Path::new(name);
+    if name.is_empty()
+        || path.is_absolute()
+        || path.components().count() != 1
+        || path.components().any(|component| {
+            matches!(
+                component,
+                std::path::Component::ParentDir
+                    | std::path::Component::RootDir
+                    | std::path::Component::Prefix(_)
+            )
+        })
+    {
+        return Err(KernelError::InvalidWorkspaceMutation(format!(
+            "invalid workspace entry name: {name}"
+        )));
+    }
+    Ok(())
+}
+
+fn ensure_project_matches(store: &ProjectStore, project_id: &str) -> Result<(), KernelError> {
+    let expected = hex::encode(store.project_id()?.as_bytes());
+    if expected != project_id {
+        return Err(KernelError::InvalidWorkspaceMutation(
+            "workspace mutation project id does not match the open project".to_owned(),
+        ));
+    }
+    Ok(())
+}
+
 fn now_millis() -> Result<i64, std::time::SystemTimeError> {
     Ok(SystemTime::now()
         .duration_since(SystemTime::UNIX_EPOCH)?
@@ -3289,6 +4724,11 @@ mod tests {
             .try_into()
             .unwrap();
         (temp, source_key)
+    }
+
+    fn project_id_hex(root: &Path) -> String {
+        let store = ProjectStore::open(root.join("project.sqlite3")).unwrap();
+        hex::encode(store.project_id().unwrap().as_bytes())
     }
 
     #[test]
@@ -3693,6 +5133,55 @@ mod tests {
             export.bytes,
             "# 标题\n\n你好 **世界** 和 [站点](https://example.test).\n".as_bytes()
         );
+    }
+
+    #[test]
+    fn markdown_path_import_and_file_export_keep_relative_image_closure() {
+        ensure_markdown_worker_binary();
+        let temp = TempDir::new().unwrap();
+        let source_dir = temp.path().join("source");
+        fs::create_dir_all(source_dir.join("assets")).unwrap();
+        let image_path = source_dir.join("assets/cover.png");
+        let mut image_bytes = Vec::new();
+        image::DynamicImage::ImageRgba8(image::RgbaImage::from_pixel(
+            2,
+            2,
+            image::Rgba([20, 40, 60, 255]),
+        ))
+        .write_to(&mut Cursor::new(&mut image_bytes), image::ImageFormat::Png)
+        .unwrap();
+        fs::write(&image_path, &image_bytes).unwrap();
+        let source_path = source_dir.join("book.md");
+        fs::write(&source_path, b"# Title\n\n![cover](assets/cover.png)\n").unwrap();
+
+        let kernel = Kernel::open(temp.path().join("book.babel")).unwrap();
+        let report = kernel
+            .import_markdown_path([10; 16], &source_path, 1_000)
+            .unwrap();
+        let units = kernel.query().unwrap().page_after(-1, 100).unwrap();
+        for (index, unit) in units.iter().enumerate() {
+            kernel
+                .save_translation(
+                    unit.source_unit_key.clone().try_into().unwrap(),
+                    hash_parts(&[b"markdown-image-closure", &(index as u64).to_be_bytes()]),
+                    unit.source_text.clone(),
+                    2_000 + index as i64,
+                )
+                .unwrap();
+        }
+        let destination = temp.path().join("export/book.md");
+        fs::create_dir_all(destination.parent().unwrap()).unwrap();
+        assert!(kernel.export_active_markdown().is_err());
+        kernel.export_active_markdown_to_path(&destination).unwrap();
+        assert_eq!(
+            fs::read(&destination).unwrap(),
+            fs::read(&source_path).unwrap()
+        );
+        assert_eq!(
+            fs::read(destination.parent().unwrap().join("assets/cover.png")).unwrap(),
+            image_bytes
+        );
+        assert_eq!(report.units, units.len());
     }
 
     #[test]
@@ -4444,5 +5933,116 @@ mod tests {
         assert_eq!(second_page.items[0].reading_order, 5);
         assert_ne!(second_page.items[0].unit_id, first_page.items[0].unit_id);
         assert_eq!(second_page.next_cursor, None);
+    }
+
+    #[test]
+    fn workspace_mutations_are_logged_and_recover_trash_operations() {
+        let temp = TempDir::new().unwrap();
+        let root = temp.path().join("book.babel");
+        fs::create_dir_all(root.join("workspace")).unwrap();
+        fs::create_dir_all(root.join("recycle")).unwrap();
+        let mut store = ProjectStore::open(root.join("project.sqlite3")).unwrap();
+        store.seed_units(1).unwrap();
+        let project_id = project_id_hex(&root);
+
+        let create = Kernel::open(&root)
+            .unwrap()
+            .mutate_workspace(WorkspaceMutationRequest::CreateFolder {
+                project_id: project_id.clone(),
+                parent_id: "workspace-root".to_owned(),
+                name: "drafts".to_owned(),
+            })
+            .unwrap();
+        assert_eq!(create.commit_sequence, 1);
+        assert!(root.join("workspace/drafts").is_dir());
+
+        let chapter = root.join("workspace/drafts/chapter.txt");
+        fs::write(&chapter, b"chapter").unwrap();
+        let kernel = Kernel::open(&root).unwrap();
+        let trash = kernel
+            .mutate_workspace(WorkspaceMutationRequest::Trash {
+                project_id: project_id.clone(),
+                node_id: "workspace/drafts/chapter.txt".to_owned(),
+            })
+            .unwrap();
+        let recycle_node_id = trash
+            .affected_node_ids
+            .iter()
+            .find(|value| value.starts_with("recycle/"))
+            .cloned()
+            .unwrap();
+        let recycle_path = root
+            .join("recycle")
+            .join(&trash.operation_id)
+            .join("drafts")
+            .join("chapter.txt");
+        assert!(recycle_path.exists());
+        assert!(!chapter.exists());
+
+        let restore = kernel
+            .mutate_workspace(WorkspaceMutationRequest::Restore {
+                project_id,
+                node_id: recycle_node_id,
+            })
+            .unwrap();
+        assert!(chapter.exists());
+        assert!(!recycle_path.exists());
+        assert!(restore.commit_sequence > trash.commit_sequence);
+
+        let reopened = ProjectStore::open(root.join("project.sqlite3")).unwrap();
+        let records = reopened
+            .workspace_operations_in_state(WorkspaceOperationState::Completed)
+            .unwrap();
+        assert!(records.iter().any(|record| record.kind == "create-folder"));
+        assert!(records.iter().any(|record| record.kind == "trash"));
+        assert!(records.iter().any(|record| record.kind == "restore"));
+    }
+
+    #[test]
+    fn unfinished_workspace_trash_is_completed_during_recovery() {
+        let temp = TempDir::new().unwrap();
+        let root = temp.path().join("book.babel");
+        fs::create_dir_all(root.join("workspace")).unwrap();
+        fs::create_dir_all(root.join("recycle")).unwrap();
+        let mut store = ProjectStore::open(root.join("project.sqlite3")).unwrap();
+        store.seed_units(1).unwrap();
+
+        let source = root.join("workspace").join("chapter.txt");
+        let recycle = root
+            .join("recycle")
+            .join("crash-recovery")
+            .join("chapter.txt");
+        fs::write(&source, b"chapter").unwrap();
+        store
+            .record_workspace_operation(&RecordWorkspaceOperationRequest {
+                operation_id: "crash-recovery".to_owned(),
+                kind: "trash".to_owned(),
+                source_node_id: Some("workspace/chapter.txt".to_owned()),
+                target_node_id: None,
+                source_path: Some("workspace/chapter.txt".to_owned()),
+                target_path: None,
+                recycle_path: Some("recycle/crash-recovery/chapter.txt".to_owned()),
+                created_at_ms: 1,
+            })
+            .unwrap();
+        fs::create_dir_all(recycle.parent().unwrap()).unwrap();
+        fs::rename(&source, &recycle).unwrap();
+        drop(store);
+
+        let kernel = Kernel::open(&root).unwrap();
+        assert!(recycle.exists());
+        assert!(!source.exists());
+
+        let reopened = ProjectStore::open(kernel.database_path()).unwrap();
+        let records = reopened
+            .workspace_operations_in_state(WorkspaceOperationState::Completed)
+            .unwrap();
+        let record = records
+            .iter()
+            .find(|record| record.operation_id == "crash-recovery")
+            .unwrap();
+        assert_eq!(record.kind, "trash");
+        assert_eq!(record.commit_sequence, Some(1));
+        assert_eq!(record.state, WorkspaceOperationState::Completed);
     }
 }
