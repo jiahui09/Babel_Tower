@@ -53,6 +53,35 @@ export interface ProjectSummary {
   commitSequence: number;
 }
 
+export interface CreateProjectRequest {
+  name: string;
+  parentDirectory: string;
+}
+
+export interface WorkspaceFile {
+  nodeId: string;
+  uri: string;
+  name: string;
+  content: string;
+  readonly: boolean;
+  modifiedAtMs: number;
+}
+
+export interface WorkspaceStateV1 {
+  schemaVersion: 1;
+  tabs: Array<{
+    id: string;
+    uri?: string;
+    title: string;
+    kind: string;
+    readonly: boolean;
+    pinned: boolean;
+  }>;
+  groups: Array<{ id: "primary" | "secondary"; tabIds: string[]; activeTabId: string | null }>;
+  expandedNodeIds: string[];
+  selectedNodeId: string | null;
+}
+
 export interface UnitSummary {
   unitId: string;
   sourceUnitKey: string;
@@ -344,8 +373,28 @@ export type SettingsPatch = Partial<Omit<AppSettingsV1, "schemaVersion">>;
 
 export interface DesktopBridge {
   bootstrap(): Promise<AppBootstrap>;
+  createProject(request: CreateProjectRequest): Promise<ProjectSummary>;
   openProject(root: string): Promise<ProjectSummary>;
   importFile(sourcePath: string, projectRoot: string): Promise<ImportResult>;
+  importWorkspaceFiles(request: {
+    projectId: string;
+    parentId: string;
+    sourcePaths: string[];
+  }): Promise<WorkspaceMutationReceipt>;
+  createWorkspaceFile(request: {
+    projectId: string;
+    parentId: string;
+    name: string;
+  }): Promise<WorkspaceMutationReceipt>;
+  readWorkspaceFile(request: { projectId: string; nodeId: string }): Promise<WorkspaceFile>;
+  writeWorkspaceFile(request: {
+    projectId: string;
+    nodeId: string;
+    content: string;
+    expectedModifiedAtMs?: number;
+  }): Promise<WorkspaceFile>;
+  readWorkspaceState(projectId: string): Promise<WorkspaceStateV1 | null>;
+  writeWorkspaceState(projectId: string, state: WorkspaceStateV1): Promise<void>;
   projectSnapshot(projectId: string): Promise<ProjectSnapshot>;
   projectTree(request: ProjectTreeRequest): Promise<ProjectTreeSnapshot>;
   searchProject(request: {

@@ -4,7 +4,8 @@ import { useCallback, useEffect, useState } from "react";
 import { useTranslation } from "react-i18next";
 
 import { TranslationEditor } from "../components/workbench/translation-editor";
-import { buttonVariants } from "../components/ui/button";
+import { Button } from "../components/ui/button";
+import { Textarea } from "../components/ui/textarea";
 import {
   plainTextDocument,
   projectDocumentText,
@@ -152,8 +153,8 @@ function ResourcesPage() {
           </span>
         </div>
         <div className="flex items-center gap-1">
-          <button
-            className={buttonVariants({ variant: "secondary" })}
+          <Button
+            variant="secondary"
             onClick={() => void runOcr()}
             disabled={ocrState === "running"}
             aria-label={t("workbench:recognizeCurrent")}
@@ -161,28 +162,28 @@ function ResourcesPage() {
           >
             <ScanText size={15} />
             {ocrState === "running" ? t("workbench:recognizing") : t("workbench:recognizeAgain")}
-          </button>
-          <button
-            className={buttonVariants({ variant: "icon" })}
+          </Button>
+          <Button
+            variant="icon"
             disabled={index === 0}
             onClick={() => setIndex((current) => Math.max(0, current - 1))}
             aria-label={t("workbench:previousRegion")}
             title={t("workbench:previousRegion")}
           >
             <ChevronLeft size={17} />
-          </button>
+          </Button>
           <span className="min-w-[70px] text-center text-xs text-[var(--text-muted)]">
             {index + 1} / {items.length}
           </span>
-          <button
-            className={buttonVariants({ variant: "icon" })}
+          <Button
+            variant="icon"
             disabled={index === items.length - 1}
             onClick={() => setIndex((current) => Math.min(items.length - 1, current + 1))}
             aria-label={t("workbench:nextRegion")}
             title={t("workbench:nextRegion")}
           >
             <ChevronRight size={17} />
-          </button>
+          </Button>
         </div>
       </header>
 
@@ -221,13 +222,13 @@ function ResourcesPage() {
             <div className="flex items-center gap-3">
               <span>{item.coordinateSpace}</span>
               {renderedUrl ? (
-                <button
-                  type="button"
-                  className="text-[var(--accent)] hover:underline"
+                <Button
+                  variant="ghost"
+                  className="h-auto px-0 py-0 text-[var(--accent)] hover:bg-transparent"
                   onClick={() => setRenderedPreview(null)}
                 >
                   {t("workbench:viewOriginal")}
-                </button>
+                </Button>
               ) : null}
             </div>
           </div>
@@ -282,9 +283,8 @@ function ResourcesPage() {
               <p className="m-0 text-xs font-semibold text-[var(--text-secondary)]">
                 {t("workbench:typesetPreview")}
               </p>
-              <button
-                type="button"
-                className={buttonVariants({ variant: "secondary" })}
+              <Button
+                variant="secondary"
                 onClick={() => void runRender()}
                 disabled={renderState === "running" || !translationText.trim()}
                 aria-label={t("workbench:generatePreview")}
@@ -292,7 +292,7 @@ function ResourcesPage() {
               >
                 <WandSparkles size={15} />
                 {renderState === "running" ? t("workbench:generating") : t("workbench:generatePreview")}
-              </button>
+              </Button>
             </div>
             <p className="mb-0 mt-2 text-xs leading-5 text-[var(--text-muted)]">
               {t("workbench:derivedPreviewDetail")}
@@ -319,6 +319,7 @@ function SourceCorrection({
   const { t } = useTranslation(["workbench", "common"]);
   const [text, setText] = useState(item.correctedSourceText ?? item.sourceText);
   const [state, setState] = useState<"idle" | "saving" | "saved" | "error">("idle");
+  const [error, setError] = useState<string | null>(null);
   const markTabDirty = useWorkbenchStore((store) => store.markTabDirty);
 
   const persist = useCallback(async (): Promise<boolean> => {
@@ -327,6 +328,7 @@ function SourceCorrection({
       return true;
     }
     setState("saving");
+    setError(null);
     try {
       await bridge.saveImageRegionEdit({
         generationId: item.generationId,
@@ -337,8 +339,9 @@ function SourceCorrection({
       setState("saved");
       markTabDirty("resources", false);
       return true;
-    } catch {
+    } catch (reason) {
       setState("error");
+      setError(reason instanceof Error ? reason.message : String(reason));
       return false;
     }
   }, [bridge, item, markTabDirty, text]);
@@ -350,7 +353,7 @@ function SourceCorrection({
       <label className="text-xs font-semibold text-[var(--text-secondary)]" htmlFor="corrected-source">
         {t("workbench:correctedSource")}
       </label>
-      <textarea
+      <Textarea
         id="corrected-source"
         value={text}
         onChange={(event) => {
@@ -358,7 +361,7 @@ function SourceCorrection({
           setState("idle");
           markTabDirty("resources", true);
         }}
-        className="mt-2 min-h-[84px] w-full resize-y border border-[var(--border)] bg-[var(--surface)] p-3 text-sm leading-6 outline-none focus:border-[var(--accent)]"
+        className="mt-2"
         aria-label={t("workbench:correctedSource")}
       />
       <div className="mt-2 flex items-center justify-between">
@@ -369,15 +372,15 @@ function SourceCorrection({
               ? t("common:saveFailed")
               : t("workbench:ocrOnly")}
         </span>
-        <button
-          type="button"
-          className={buttonVariants({ variant: "secondary" })}
-          onClick={() => void persist()}
-          disabled={state === "saving"}
-        >
+        <Button variant="secondary" onClick={() => void persist()} disabled={state === "saving"}>
           {state === "saving" ? t("common:saving") : t("workbench:saveCorrection")}
-        </button>
+        </Button>
       </div>
+      {error && (
+        <p className="mb-0 mt-2 text-xs text-[var(--danger)]" role="alert">
+          {error}
+        </p>
+      )}
     </div>
   );
 }

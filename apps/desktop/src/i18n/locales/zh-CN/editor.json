@@ -8,6 +8,11 @@
   "italic": "斜体",
   "strike": "删除线",
   "code": "行内代码",
+  "heading": "标题段落",
+  "quote": "引用段落",
+  "list": "列表项",
+  "undo": "撤销本地输入",
+  "redo": "重做本地输入",
   "previousUnit": "上一单元",
   "nextUnit": "下一单元",
   "closeDirtyTitle": "关闭未保存的标签？",
@@ -16,5 +21,8 @@
   "copyDraft": "复制草稿",
   "saveConflict": "译文已在其他位置更新，本地内容尚未丢失。",
   "openInOtherGroup": "在另一编辑组打开",
-  "secondaryPreview": "另一编辑组"
+  "secondaryPreview": "另一编辑组",
+  "saveFile": "保存文件",
+  "closeOthers": "关闭其他标签",
+  "closeRight": "关闭右侧标签"
 }

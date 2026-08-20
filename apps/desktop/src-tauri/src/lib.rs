@@ -54,6 +54,34 @@ struct ImportFileRequest {
     project_root: String,
 }
 
+#[derive(Debug, Deserialize)]
+#[serde(rename_all = "camelCase")]
+struct CreateProjectRequest { name: String, parent_directory: String }
+
+#[derive(Debug, Deserialize)]
+#[serde(rename_all = "camelCase")]
+struct WorkspaceFilesRequest { project_id: String, parent_id: String, source_paths: Vec<String> }
+
+#[derive(Debug, Deserialize)]
+#[serde(rename_all = "camelCase")]
+struct CreateWorkspaceFileRequest { project_id: String, parent_id: String, name: String }
+
+#[derive(Debug, Deserialize)]
+#[serde(rename_all = "camelCase")]
+struct WorkspaceFileRequest { project_id: String, node_id: String }
+
+#[derive(Debug, Deserialize)]
+#[serde(rename_all = "camelCase")]
+struct WriteWorkspaceFileRequest { project_id: String, node_id: String, content: String, expected_modified_at_ms: Option<i64> }
+
+#[derive(Debug, Deserialize)]
+#[serde(rename_all = "camelCase")]
+struct WorkspaceStateRequest { project_id: String, state: serde_json::Value }
+
+#[derive(Debug, Serialize)]
+#[serde(rename_all = "camelCase")]
+struct WorkspaceFile { node_id: String, uri: String, name: String, content: String, readonly: bool, modified_at_ms: i64 }
+
 #[derive(Debug, Serialize)]
 #[serde(rename_all = "camelCase")]
 struct ImportResult {
@@ -653,6 +681,34 @@ fn open_project(
     app: AppHandle,
     state: State<'_, DesktopState>,
 ) -> Result<ProjectSummary, String> {
+    let requested_root = PathBuf::from(&request.root);
+    let requested_root = requested_root
+        .canonicalize()
+        .unwrap_or(requested_root);
+    let active_project = {
+        let guard = state
+            .session
+            .lock()
+            .map_err(|_| "desktop session lock is poisoned".to_owned())?;
+        guard.as_ref().and_then(|kernel| {
+            let active_root = kernel.database_path().parent()?.to_path_buf();
+            let active_root = active_root.canonicalize().unwrap_or(active_root);
+            if active_root != requested_root {
+                return None;
+            }
+            let commit_sequence = kernel.query().ok()?.commit_sequence().ok()?;
+            Some(ProjectSummary {
+                project_id: hex::encode(kernel.project_id().as_bytes()),
+                root: request.root.clone(),
+                commit_sequence,
+            })
+        })
+    };
+    if let Some(summary) = active_project {
+        register_project(&app, &summary)?;
+        return Ok(summary);
+    }
+    ensure_project_config(Path::new(&request.root))?;
     let kernel = Kernel::open(&request.root).map_err(|error| error.to_string())?;
     let commit_sequence = kernel
         .query()
@@ -674,6 +730,139 @@ fn open_project(
 }
 
 #[tauri::command]
+fn create_project(
+    request: CreateProjectRequest,
+    app: AppHandle,
+    state: State<'_, DesktopState>,
+) -> Result<ProjectSummary, String> {
+    let name = request.name.trim();
+    if name.is_empty() || Path::new(name).components().count() != 1 {
+        return Err("项目名称无效".to_owned());
+    }
+    let root = PathBuf::from(&request.parent_directory).join(name);
+    if root.exists() && fs::read_dir(&root).map_err(|e| e.to_string())?.next().is_some() {
+        return Err("项目目录已存在且不为空".to_owned());
+    }
+    fs::create_dir_all(root.join("workspace")).map_err(|e| e.to_string())?;
+    ensure_project_config(&root)?;
+    fs::write(root.join("workspace/README.md"), b"# New Project\n\n").map_err(|e| e.to_string())?;
+    let kernel = Kernel::open(&root).map_err(|error| error.to_string())?;
+    let commit_sequence = kernel.query().map_err(|e| e.to_string())?.commit_sequence().map_err(|e| e.to_string())?;
+    let summary = ProjectSummary { project_id: hex::encode(kernel.project_id().as_bytes()), root: root.to_string_lossy().into_owned(), commit_sequence };
+    let mut guard = state.session.lock().map_err(|_| "desktop session lock is poisoned".to_owned())?;
+    *guard = Some(kernel);
+    register_project(&app, &summary)?;
+    let initial_state = serde_json::json!({ "schemaVersion": 1, "tabs": [{ "id": "file:workspace/README.md", "uri": root.join("workspace/README.md").to_string_lossy(), "title": "README.md", "kind": "workspaceFile", "readonly": false, "pinned": true }], "groups": [{ "id": "primary", "tabIds": ["file:workspace/README.md"], "activeTabId": "file:workspace/README.md" }, { "id": "secondary", "tabIds": [], "activeTabId": null }], "expandedNodeIds": ["workspace-root"], "selectedNodeId": "workspace/README.md" });
+    fs::write(root.join(".config/workspace-state.json"), serde_json::to_vec_pretty(&initial_state).map_err(|e| e.to_string())?).map_err(|e| e.to_string())?;
+    Ok(summary)
+}
+
+fn ensure_project_config(root: &Path) -> Result<(), String> {
+    let config = root.join(".config");
+    fs::create_dir_all(&config).map_err(|e| e.to_string())?;
+    let settings = config.join("settings.json");
+    if !settings.exists() { fs::write(settings, b"{\n  \"schemaVersion\": 1\n}\n").map_err(|e| e.to_string())?; }
+    Ok(())
+}
+
+fn workspace_root_for_kernel(kernel: &Kernel) -> Result<PathBuf, String> {
+    Ok(kernel.database_path().parent().ok_or_else(|| "项目目录不可用".to_owned())?.join("workspace"))
+}
+
+fn ensure_kernel_project(kernel: &Kernel, project_id: &str) -> Result<(), String> {
+    if hex::encode(kernel.project_id().as_bytes()) != project_id { return Err("项目不匹配".to_owned()); }
+    Ok(())
+}
+
+fn workspace_path(root: &Path, node_id: &str) -> Result<PathBuf, String> {
+    let relative = node_id.strip_prefix("workspace/").ok_or_else(|| "仅允许访问工作区文件".to_owned())?;
+    if relative.is_empty() || Path::new(relative).components().any(|c| matches!(c, std::path::Component::ParentDir | std::path::Component::RootDir | std::path::Component::Prefix(_))) {
+        return Err("工作区路径无效".to_owned());
+    }
+    Ok(root.join(relative))
+}
+
+fn parent_workspace_path(root: &Path, parent_id: &str) -> Result<PathBuf, String> {
+    if parent_id == "workspace-root" { return Ok(root.to_path_buf()); }
+    workspace_path(root, parent_id)
+}
+
+fn modified_at_ms(path: &Path) -> Result<i64, String> {
+    let modified = fs::metadata(path).and_then(|m| m.modified()).map_err(|e| e.to_string())?;
+    Ok(modified.duration_since(std::time::UNIX_EPOCH).map_err(|e| e.to_string())?.as_millis() as i64)
+}
+
+fn workspace_file(path: &Path, root: &Path, readonly: bool) -> Result<WorkspaceFile, String> {
+    let relative = path.strip_prefix(root).map_err(|_| "工作区路径越界".to_owned())?.to_string_lossy().replace('\\', "/");
+    let name = path.file_name().and_then(|v| v.to_str()).unwrap_or_default().to_owned();
+    Ok(WorkspaceFile { node_id: format!("workspace/{relative}"), uri: path.to_string_lossy().into_owned(), name, content: fs::read_to_string(path).map_err(|e| e.to_string())?, readonly, modified_at_ms: modified_at_ms(path)? })
+}
+
+fn crypto_operation_id() -> String { hex::encode(ProjectId::new().as_bytes()) }
+
+#[tauri::command]
+fn create_workspace_file(request: CreateWorkspaceFileRequest, state: State<'_, DesktopState>) -> Result<WorkspaceMutationReceipt, String> {
+    with_kernel(&state, |kernel| {
+        ensure_kernel_project(kernel, &request.project_id)?;
+        let root = workspace_root_for_kernel(kernel)?;
+        if request.name.trim().is_empty() || Path::new(&request.name).components().count() != 1 { return Err("文件名称无效".to_owned()); }
+        let parent = parent_workspace_path(&root, &request.parent_id)?;
+        if !parent.is_dir() { return Err("目标文件夹不存在".to_owned()); }
+        let path = parent.join(request.name.trim());
+        if path.exists() { return Err("文件已存在".to_owned()); }
+        fs::write(&path, b"").map_err(|e| e.to_string())?;
+        Ok(WorkspaceMutationReceipt { operation_id: crypto_operation_id(), commit_sequence: kernel.query().map_err(|e| e.to_string())?.commit_sequence().map_err(|e| e.to_string())?, affected_node_ids: vec![format!("workspace/{}", path.strip_prefix(&root).unwrap().to_string_lossy().replace('\\', "/"))] })
+    })
+}
+
+#[tauri::command]
+fn import_workspace_files(request: WorkspaceFilesRequest, state: State<'_, DesktopState>) -> Result<WorkspaceMutationReceipt, String> {
+    with_kernel(&state, |kernel| {
+        ensure_kernel_project(kernel, &request.project_id)?;
+        let root = workspace_root_for_kernel(kernel)?;
+        let parent = parent_workspace_path(&root, &request.parent_id)?;
+        if !parent.is_dir() { return Err("目标文件夹不存在".to_owned()); }
+        let mut affected = Vec::new();
+        for source in request.source_paths {
+            let source = PathBuf::from(source);
+            let name = source.file_name().and_then(|v| v.to_str()).ok_or_else(|| "导入文件名无效".to_owned())?;
+            let destination = parent.join(name);
+            fs::copy(&source, &destination).map_err(|e| e.to_string())?;
+            affected.push(format!("workspace/{}", destination.strip_prefix(&root).unwrap().to_string_lossy().replace('\\', "/")));
+        }
+        Ok(WorkspaceMutationReceipt { operation_id: crypto_operation_id(), commit_sequence: kernel.query().map_err(|e| e.to_string())?.commit_sequence().map_err(|e| e.to_string())?, affected_node_ids: affected })
+    })
+}
+
+#[tauri::command]
+fn read_workspace_file(request: WorkspaceFileRequest, state: State<'_, DesktopState>) -> Result<WorkspaceFile, String> {
+    with_kernel(&state, |kernel| { ensure_kernel_project(kernel, &request.project_id)?; let root = workspace_root_for_kernel(kernel)?; let path = workspace_path(&root, &request.node_id)?; if !path.is_file() { return Err("文件不存在".to_owned()); } workspace_file(&path, &root, false) })
+}
+
+#[tauri::command]
+fn write_workspace_file(request: WriteWorkspaceFileRequest, state: State<'_, DesktopState>) -> Result<WorkspaceFile, String> {
+    with_kernel(&state, |kernel| {
+        ensure_kernel_project(kernel, &request.project_id)?;
+        let root = workspace_root_for_kernel(kernel)?;
+        let path = workspace_path(&root, &request.node_id)?;
+        if !path.is_file() { return Err("文件不存在".to_owned()); }
+        if let Some(expected) = request.expected_modified_at_ms { if modified_at_ms(&path)? != expected { return Err("文件已在外部发生变化".to_owned()); } }
+        fs::write(&path, request.content).map_err(|e| e.to_string())?;
+        workspace_file(&path, &root, false)
+    })
+}
+
+#[tauri::command]
+fn read_workspace_state(request: WorkspaceFileRequest, state: State<'_, DesktopState>) -> Result<Option<serde_json::Value>, String> {
+    with_kernel(&state, |kernel| { let project_id = hex::encode(kernel.project_id().as_bytes()); if request.project_id != project_id { return Err("项目不匹配".to_owned()); } let path = kernel.database_path().parent().ok_or_else(|| "项目目录不可用".to_owned())?.join(".config/workspace-state.json"); match fs::read_to_string(path) { Ok(text) => serde_json::from_str(&text).map(Some).map_err(|e| e.to_string()), Err(e) if e.kind() == std::io::ErrorKind::NotFound => Ok(None), Err(e) => Err(e.to_string()) } })
+}
+
+#[tauri::command]
+fn write_workspace_state(request: WorkspaceStateRequest, state: State<'_, DesktopState>) -> Result<(), String> {
+    with_kernel(&state, |kernel| { let project_id = hex::encode(kernel.project_id().as_bytes()); if request.project_id != project_id { return Err("项目不匹配".to_owned()); } let config = kernel.database_path().parent().ok_or_else(|| "项目目录不可用".to_owned())?.join(".config"); fs::create_dir_all(&config).map_err(|e| e.to_string())?; fs::write(config.join("workspace-state.json"), serde_json::to_vec_pretty(&request.state).map_err(|e| e.to_string())?).map_err(|e| e.to_string()) })
+}
+
+#[tauri::command]
 fn list_projects(app: AppHandle) -> Result<Vec<ProjectEntry>, String> {
     read_project_registry(&app)
 }
@@ -690,6 +879,7 @@ fn import_file(
         .and_then(|value| value.to_str())
         .map(str::to_ascii_lowercase)
         .ok_or_else(|| "源文件缺少扩展名".to_owned())?;
+    ensure_project_config(Path::new(&request.project_root))?;
     let kernel = Kernel::open(&request.project_root).map_err(|error| error.to_string())?;
     let source_id = *ProjectId::new().as_bytes();
     let report = match format.as_str() {
@@ -836,10 +1026,15 @@ fn collect_project_tree_nodes(directory: &Path, parent_id: &str, section: &str, 
         let node_id = format!("{prefix}/{relative}");
         let is_directory = metadata.is_dir();
         let recycle = prefix == "recycle";
-        nodes.push(ProjectTreeNode { id: node_id.clone(), parent_id: Some(parent_id.to_owned()), section: section.to_owned(), kind: if is_directory { "folder" } else { "resource" }.to_owned(), name: entry.file_name().to_string_lossy().into_owned(), semantic_path: relative, mapped_path: Some(entry.path().to_string_lossy().into_owned()), capabilities: ProjectTreeCapabilities { open: !is_directory, create_child: is_directory && !recycle, rename: !recycle, r#move: !recycle, delete: !recycle, reveal: true, drop: is_directory && !recycle } });
+        let open = !is_directory && !recycle && is_workspace_text_file(&entry.path());
+        nodes.push(ProjectTreeNode { id: node_id.clone(), parent_id: Some(parent_id.to_owned()), section: section.to_owned(), kind: if is_directory { "folder" } else { "resource" }.to_owned(), name: entry.file_name().to_string_lossy().into_owned(), semantic_path: relative, mapped_path: Some(entry.path().to_string_lossy().into_owned()), capabilities: ProjectTreeCapabilities { open, create_child: is_directory && !recycle, rename: !recycle, r#move: !recycle, delete: !recycle, reveal: true, drop: is_directory && !recycle } });
         if is_directory { collect_project_tree_nodes(&entry.path(), &node_id, section, prefix, base, nodes)?; }
     }
     Ok(())
+}
+
+fn is_workspace_text_file(path: &Path) -> bool {
+    matches!(path.extension().and_then(|value| value.to_str()).map(str::to_ascii_lowercase).as_deref(), Some("txt" | "md" | "markdown" | "json" | "yaml" | "yml" | "toml" | "csv"))
 }
 
 #[tauri::command]
@@ -1575,9 +1770,16 @@ pub fn run() {
             session: Mutex::new(None),
         })
         .invoke_handler(tauri::generate_handler![
+            create_project,
             open_project,
             list_projects,
             import_file,
+            import_workspace_files,
+            create_workspace_file,
+            read_workspace_file,
+            write_workspace_file,
+            read_workspace_state,
+            write_workspace_state,
             workbench_snapshot,
             project_tree,
             resource_queue,

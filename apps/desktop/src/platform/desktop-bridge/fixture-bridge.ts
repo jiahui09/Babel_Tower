@@ -7,8 +7,15 @@ export function createFixtureBridge(overrides: Partial<DesktopBridge>): DesktopB
   };
   return {
     bootstrap: () => missing("bootstrap"),
+    createProject: () => missing("createProject"),
     openProject: () => missing("openProject"),
     importFile: () => missing("importFile"),
+    importWorkspaceFiles: () => missing("importWorkspaceFiles"),
+    createWorkspaceFile: () => missing("createWorkspaceFile"),
+    readWorkspaceFile: () => missing("readWorkspaceFile"),
+    writeWorkspaceFile: () => missing("writeWorkspaceFile"),
+    readWorkspaceState: () => missing("readWorkspaceState"),
+    writeWorkspaceState: () => missing("writeWorkspaceState"),
     projectSnapshot: () => missing("projectSnapshot"),
     projectTree: () => missing("projectTree"),
     searchProject: () => missing("searchProject"),

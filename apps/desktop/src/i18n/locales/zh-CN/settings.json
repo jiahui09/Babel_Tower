@@ -15,5 +15,6 @@
   "lineHeight": "行高",
   "wordWrap": "自动换行",
   "shortcuts": "快捷键",
-  "panelWidths": "面板宽度"
+  "panelWidths": "面板宽度",
+  "saving": "正在保存设置"
 }

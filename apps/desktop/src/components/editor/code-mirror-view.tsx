@@ -5,7 +5,7 @@ import { EditorState } from "@codemirror/state";
 import { EditorView, highlightActiveLine, keymap, lineNumbers } from "@codemirror/view";
 import { useEffect, useRef } from "react";
 
-export function CodeMirrorView({ value, readOnly = true, ariaLabel }: { value: string; readOnly?: boolean; ariaLabel: string }) {
+export function CodeMirrorView({ value, readOnly = true, ariaLabel, onChange }: { value: string; readOnly?: boolean; ariaLabel: string; onChange?: (value: string) => void }) {
   const parent = useRef<HTMLDivElement>(null);
   useEffect(() => {
     if (!parent.current) return;
@@ -24,6 +24,9 @@ export function CodeMirrorView({ value, readOnly = true, ariaLabel }: { value: s
           EditorView.editable.of(!readOnly),
           EditorView.lineWrapping,
           EditorView.contentAttributes.of({ "aria-label": ariaLabel }),
+          EditorView.updateListener.of((update) => {
+            if (update.docChanged) onChange?.(update.state.doc.toString());
+          }),
           EditorView.theme({
             "&": { height: "100%", backgroundColor: "var(--surface)", color: "var(--text)" },
             ".cm-scroller": { fontFamily: "var(--editor-font)", lineHeight: "1.65" },
@@ -34,7 +37,6 @@ export function CodeMirrorView({ value, readOnly = true, ariaLabel }: { value: s
       }),
     });
     return () => view.destroy();
-  }, [ariaLabel, readOnly, value]);
+  }, [ariaLabel, onChange, readOnly, value]);
   return <div ref={parent} className="h-full min-h-0 overflow-hidden" />;
 }
-

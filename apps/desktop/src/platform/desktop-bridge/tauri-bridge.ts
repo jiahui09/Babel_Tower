@@ -1,5 +1,6 @@
 import { invoke } from "@tauri-apps/api/core";
 
+import { requireTauriRuntime } from "../tauri-runtime";
 import { plainTextDocument, projectDocumentText } from "./document";
 import { BridgeError, normalizeBridgeError } from "./error";
 import type {
@@ -42,6 +43,7 @@ const DEFAULT_SETTINGS: AppSettingsV1 = {
 };
 
 async function call<T>(command: string, args?: Record<string, unknown>): Promise<T> {
+  requireTauriRuntime(command);
   try {
     return await invoke<T>(command, args);
   } catch (reason) {
@@ -54,6 +56,10 @@ async function call<T>(command: string, args?: Record<string, unknown>): Promise
 }
 
 export class TauriDesktopBridge implements DesktopBridge {
+  createProject(request: import("./types").CreateProjectRequest) {
+    return call<import("./types").ProjectSummary>("create_project", { request });
+  }
+
   openProject(root: string) {
     return call<{ projectId: string; root: string; commitSequence: number }>("open_project", {
       request: { root },
@@ -68,6 +74,41 @@ export class TauriDesktopBridge implements DesktopBridge {
       activated: boolean;
       reviewRequired: number;
     }>("import_file", { request: { sourcePath, projectRoot } });
+  }
+
+  importWorkspaceFiles(request: {
+    projectId: string;
+    parentId: string;
+    sourcePaths: string[];
+  }) {
+    return call<import("./types").WorkspaceMutationReceipt>("import_workspace_files", { request });
+  }
+
+  createWorkspaceFile(request: { projectId: string; parentId: string; name: string }) {
+    return call<import("./types").WorkspaceMutationReceipt>("create_workspace_file", { request });
+  }
+
+  readWorkspaceFile(request: { projectId: string; nodeId: string }) {
+    return call<import("./types").WorkspaceFile>("read_workspace_file", { request });
+  }
+
+  writeWorkspaceFile(request: {
+    projectId: string;
+    nodeId: string;
+    content: string;
+    expectedModifiedAtMs?: number;
+  }) {
+    return call<import("./types").WorkspaceFile>("write_workspace_file", { request });
+  }
+
+  readWorkspaceState(projectId: string) {
+    return call<import("./types").WorkspaceStateV1 | null>("read_workspace_state", {
+      request: { projectId },
+    });
+  }
+
+  writeWorkspaceState(projectId: string, state: import("./types").WorkspaceStateV1) {
+    return call<void>("write_workspace_state", { request: { projectId, state } });
   }
   async bootstrap() {
     const projects = await call<ProjectEntry[]>("list_projects");

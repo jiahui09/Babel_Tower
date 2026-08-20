@@ -2,6 +2,7 @@ import { useQuery, useQueryClient } from "@tanstack/react-query";
 import {
   ChevronRight,
   FilePlus,
+  FolderInput,
   FileText,
   Folder,
   Image,
@@ -13,13 +14,16 @@ import {
 } from "lucide-react";
 import { Button as AriaButton, Tree, TreeItem, TreeItemContent } from "react-aria-components";
 import { useTranslation } from "react-i18next";
-import { useState } from "react";
+import { useEffect, useState } from "react";
 
 import { cn } from "../../lib/utils";
 import { useDesktopBridge, type ProjectTreeNode } from "../../platform/desktop-bridge";
 import { projectSearchQuery, projectTreeQuery } from "../../queries/project";
 import { useWorkbenchStore, type ExplorerPanel } from "../../stores/workbench";
+import { useWorkspaceStore } from "../../stores/workspace";
+import { chooseWorkspaceFiles } from "../../lib/dialog";
 import { Button } from "../ui/button";
+import { Dialog, DialogContent, DialogDescription, DialogTitle } from "../ui/dialog";
 import { Input } from "../ui/input";
 import { ScrollArea } from "../ui/scroll-area";
 import { Tooltip } from "../ui/tooltip";
@@ -29,6 +33,13 @@ const panels: Array<{ id: ExplorerPanel; icon: typeof Folder; key: "resources" |
   { id: "outline", icon: TreePine, key: "outline" },
   { id: "search", icon: Search, key: "search" },
 ];
+
+type PendingWorkspaceMutation =
+  | { kind: "createFolder"; parentId: string; name: string }
+  | { kind: "createFile"; parentId: string; name: string }
+  | { kind: "rename"; node: ProjectTreeNode; name: string }
+  | { kind: "trash"; node: ProjectTreeNode }
+  | null;
 
 export function ProjectExplorer({
   projectId,
@@ -42,18 +53,59 @@ export function ProjectExplorer({
   const queryClient = useQueryClient();
   const panel = useWorkbenchStore((state) => state.explorerPanel);
   const setPanel = useWorkbenchStore((state) => state.setExplorerPanel);
+  const selectedNodeId = useWorkspaceStore((state) => state.selectedNodeId);
+  const setSelectedNodeId = useWorkspaceStore((state) => state.setSelected);
+  const loadTree = useWorkspaceStore((state) => state.loadTree);
+  const reconcileWorkspaceFiles = useWorkbenchStore((state) => state.reconcileWorkspaceFiles);
   const query = useQuery(projectTreeQuery(bridge, projectId));
   const [searchText, setSearchText] = useState("");
   const searchQuery = useQuery(projectSearchQuery(bridge, projectId, searchText));
   const [mutationError, setMutationError] = useState<string | null>(null);
   const [mutating, setMutating] = useState(false);
+  const [pendingMutation, setPendingMutation] = useState<PendingWorkspaceMutation>(null);
 
-  const mutate = async (request: Parameters<typeof bridge.mutateWorkspace>[0]) => {
+  const mutate = async (request: Parameters<typeof bridge.mutateWorkspace>[0]): Promise<boolean> => {
     setMutating(true);
     setMutationError(null);
     try {
       await bridge.mutateWorkspace(request);
       await queryClient.invalidateQueries({ queryKey: ["project", projectId, "tree"] });
+      return true;
+    } catch (error) {
+      setMutationError(error instanceof Error ? error.message : String(error));
+      return false;
+    } finally {
+      setMutating(false);
+    }
+  };
+
+  const workspaceRoot = query.data?.nodes.find((node) => node.id === "workspace-root");
+
+  useEffect(() => {
+    if (!query.data) return;
+    loadTree(projectId, query.data.nodes);
+    reconcileWorkspaceFiles(
+      projectId,
+      query.data.nodes
+        .filter((node) => node.section === "workspace" && node.kind === "resource")
+        .map((node) => ({ nodeId: node.id, uri: node.mappedPath, title: node.name })),
+    );
+  }, [loadTree, projectId, query.data, reconcileWorkspaceFiles]);
+
+  const importFiles = async () => {
+    const sourcePaths = await chooseWorkspaceFiles();
+    if (!sourcePaths.length || !workspaceRoot) return;
+    setMutating(true);
+    setMutationError(null);
+    try {
+      const receipt = await bridge.importWorkspaceFiles({
+        projectId,
+        parentId: workspaceRoot.id,
+        sourcePaths,
+      });
+      await queryClient.invalidateQueries({ queryKey: ["project", projectId, "tree"] });
+      const last = receipt.affectedNodeIds[receipt.affectedNodeIds.length - 1];
+      if (last) setSelectedNodeId(last);
     } catch (error) {
       setMutationError(error instanceof Error ? error.message : String(error));
     } finally {
@@ -61,16 +113,37 @@ export function ProjectExplorer({
     }
   };
 
-  const createFolder = () => {
-    const name = globalThis.prompt(t("newFolder"));
-    if (name?.trim())
-      void mutate({ kind: "createFolder", projectId, parentId: "workspace-root", name: name.trim() });
+  const handleDrop = async (event: React.DragEvent<HTMLElement>) => {
+    event.preventDefault();
+    if (!workspaceRoot) return;
+    const sourcePaths = Array.from(event.dataTransfer.files)
+      .map((file) => (file as File & { path?: string }).path)
+      .filter((path): path is string => Boolean(path));
+    if (!sourcePaths.length) return;
+    setMutating(true);
+    setMutationError(null);
+    try {
+      const receipt = await bridge.importWorkspaceFiles({
+        projectId,
+        parentId: workspaceRoot.id,
+        sourcePaths,
+      });
+      await queryClient.invalidateQueries({ queryKey: ["project", projectId, "tree"] });
+      const last = receipt.affectedNodeIds[receipt.affectedNodeIds.length - 1];
+      if (last) setSelectedNodeId(last);
+    } catch (error) {
+      setMutationError(error instanceof Error ? error.message : String(error));
+    } finally {
+      setMutating(false);
+    }
   };
 
   return (
     <aside
       className="grid h-full min-h-0 grid-rows-[32px_1fr] bg-[var(--surface-raised)]"
       aria-label={t("title")}
+      onDragOver={(event) => event.preventDefault()}
+      onDrop={(event) => void handleDrop(event)}
     >
       <div className="flex items-center border-b border-[var(--border)] px-1">
         {panels.map(({ id, icon: Icon, key }) => (
@@ -148,19 +221,114 @@ export function ProjectExplorer({
       ) : (
         <ScrollArea className="min-h-0">
           <div className="flex items-center justify-end border-b border-[var(--border)] px-2 py-1">
-            <Button variant="icon" disabled={mutating} onClick={createFolder} aria-label={t("newFolder")}>
+            <Button
+              variant="icon"
+              disabled={mutating || panel !== "resources" || !workspaceRoot?.capabilities.createChild}
+              onClick={() =>
+                workspaceRoot &&
+                setPendingMutation({ kind: "createFile", parentId: workspaceRoot.id, name: "" })
+              }
+              aria-label={t("newFile")}
+              title={t("newFile")}
+            >
+              <FileText size={14} />
+            </Button>
+            <Button
+              variant="icon"
+              disabled={mutating || panel !== "resources" || !workspaceRoot?.capabilities.createChild}
+              onClick={() =>
+                workspaceRoot &&
+                setPendingMutation({ kind: "createFolder", parentId: workspaceRoot.id, name: "" })
+              }
+              aria-label={t("newFolder")}
+              title={panel === "resources" ? t("newFolder") : t("resources")}
+            >
               <FilePlus size={14} />
+            </Button>
+            <Button
+              variant="icon"
+              disabled={mutating || panel !== "resources"}
+              onClick={() => void importFiles()}
+              aria-label={t("importFiles")}
+              title={t("importFiles")}
+            >
+              <FolderInput size={14} />
+            </Button>
+            <Button
+              variant="icon"
+              disabled={query.isFetching}
+              onClick={() => void query.refetch()}
+              aria-label={t("refresh")}
+              title={t("refresh")}
+            >
+              <RotateCcw size={14} />
             </Button>
           </div>
           {mutationError && <p className="m-0 p-2 text-xs text-[var(--danger)]">{mutationError}</p>}
           <ProjectTree
             projectId={projectId}
             nodes={query.data.nodes}
+            mode={panel}
+            selectedNodeId={selectedNodeId}
+            onSelectionChange={setSelectedNodeId}
             onOpenNode={onOpenNode}
             onMutate={mutate}
+            onRequestMutation={setPendingMutation}
           />
         </ScrollArea>
       )}
+      <WorkspaceMutationDialog
+        pending={pendingMutation}
+        busy={mutating}
+        onOpenChange={(open) => !open && setPendingMutation(null)}
+        onNameChange={(name) =>
+          setPendingMutation((current) => (current && "name" in current ? { ...current, name } : current))
+        }
+        onConfirm={async () => {
+          if (!pendingMutation) return;
+          if (pendingMutation.kind === "createFile") {
+            if (!pendingMutation.name.trim()) return;
+            setMutating(true);
+            try {
+              const receipt = await bridge.createWorkspaceFile({
+                projectId,
+                parentId: pendingMutation.parentId,
+                name: pendingMutation.name.trim(),
+              });
+              await queryClient.invalidateQueries({ queryKey: ["project", projectId, "tree"] });
+              const nodeId = receipt.affectedNodeIds[0];
+              if (nodeId) setSelectedNodeId(nodeId);
+              setPendingMutation(null);
+            } catch (error) {
+              setMutationError(error instanceof Error ? error.message : String(error));
+            } finally {
+              setMutating(false);
+            }
+            return;
+          }
+          const request =
+            pendingMutation.kind === "createFolder"
+              ? pendingMutation.name.trim()
+                ? {
+                    kind: "createFolder" as const,
+                    projectId,
+                    parentId: pendingMutation.parentId,
+                    name: pendingMutation.name.trim(),
+                  }
+                : null
+              : pendingMutation.kind === "rename"
+                ? pendingMutation.name.trim() && pendingMutation.name.trim() !== pendingMutation.node.name
+                  ? {
+                      kind: "rename" as const,
+                      projectId,
+                      nodeId: pendingMutation.node.id,
+                      name: pendingMutation.name.trim(),
+                    }
+                  : null
+                : { kind: "trash" as const, projectId, nodeId: pendingMutation.node.id };
+          if (request && (await mutate(request))) setPendingMutation(null);
+        }}
+      />
     </aside>
   );
 }
@@ -168,21 +336,44 @@ export function ProjectExplorer({
 function ProjectTree({
   projectId,
   nodes,
+  mode,
+  selectedNodeId,
+  onSelectionChange,
   onOpenNode,
   onMutate,
+  onRequestMutation,
 }: {
   projectId: string;
   nodes: ProjectTreeNode[];
+  mode: Exclude<ExplorerPanel, "search">;
+  selectedNodeId: string | null;
+  onSelectionChange: (nodeId: string | null) => void;
   onOpenNode: (node: ProjectTreeNode) => void;
-  onMutate: (request: Parameters<ReturnType<typeof useDesktopBridge>["mutateWorkspace"]>[0]) => Promise<void>;
+  onMutate: (
+    request: Parameters<ReturnType<typeof useDesktopBridge>["mutateWorkspace"]>[0],
+  ) => Promise<boolean>;
+  onRequestMutation: (pending: PendingWorkspaceMutation) => void;
 }) {
   const { t } = useTranslation("explorer");
-  const sections = (["source", "workspace", "derived"] as const).map((section) => ({
-    section,
-    nodes: nodes.filter((node) => node.section === section),
-  }));
+  const visibleNodes = mode === "outline" ? nodes.filter((node) => node.section === "source") : nodes;
+  const sections = (["source", "workspace", "derived"] as const)
+    .filter((section) => mode !== "outline" || section === "source")
+    .map((section) => ({
+      section,
+      nodes: visibleNodes.filter((node) => node.section === section),
+    }));
   return (
-    <Tree aria-label={t("title")} selectionMode="single" className="p-1 text-sm">
+    <Tree
+      aria-label={t(mode)}
+      selectionMode="single"
+      selectedKeys={selectedNodeId ? [selectedNodeId] : []}
+      onSelectionChange={(keys) => {
+        if (keys === "all") return onSelectionChange(null);
+        const [nodeId] = Array.from(keys);
+        onSelectionChange(typeof nodeId === "string" ? nodeId : null);
+      }}
+      className="p-1 text-sm"
+    >
       {sections.map(({ section, nodes: sectionNodes }) => (
         <TreeItem key={section} id={`section:${section}`} textValue={t(section)}>
           <TreeItemContent>
@@ -238,6 +429,7 @@ function ProjectTree({
                       projectId={projectId}
                       onOpenNode={onOpenNode}
                       onMutate={onMutate}
+                      onRequestMutation={onRequestMutation}
                     />
                   ))}
               </TreeItem>
@@ -254,12 +446,16 @@ function ProjectNode({
   projectId,
   onOpenNode,
   onMutate,
+  onRequestMutation,
 }: {
   node: ProjectTreeNode;
   nodes: ProjectTreeNode[];
   projectId: string;
   onOpenNode: (node: ProjectTreeNode) => void;
-  onMutate: (request: Parameters<ReturnType<typeof useDesktopBridge>["mutateWorkspace"]>[0]) => Promise<void>;
+  onMutate: (
+    request: Parameters<ReturnType<typeof useDesktopBridge>["mutateWorkspace"]>[0],
+  ) => Promise<boolean>;
+  onRequestMutation: (pending: PendingWorkspaceMutation) => void;
 }) {
   const { t } = useTranslation("explorer");
   const children = nodes.filter((candidate) => candidate.parentId === node.id);
@@ -303,9 +499,7 @@ function ProjectNode({
                 aria-label={t("rename")}
                 onClick={(event) => {
                   event.stopPropagation();
-                  const name = globalThis.prompt(t("rename"), node.name);
-                  if (name?.trim() && name.trim() !== node.name)
-                    void onMutate({ kind: "rename", projectId, nodeId: node.id, name: name.trim() });
+                  onRequestMutation({ kind: "rename", node, name: node.name });
                 }}
               >
                 <Pencil size={12} />
@@ -318,8 +512,7 @@ function ProjectNode({
                 aria-label={t("moveToTrash")}
                 onClick={(event) => {
                   event.stopPropagation();
-                  if (globalThis.confirm(t("confirmMoveToTrash", { name: node.name })))
-                    void onMutate({ kind: "trash", projectId, nodeId: node.id });
+                  onRequestMutation({ kind: "trash", node });
                 }}
               >
                 <Trash2 size={12} />
@@ -336,8 +529,69 @@ function ProjectNode({
           projectId={projectId}
           onOpenNode={onOpenNode}
           onMutate={onMutate}
+          onRequestMutation={onRequestMutation}
         />
       ))}
     </TreeItem>
+  );
+}
+
+function WorkspaceMutationDialog({
+  pending,
+  busy,
+  onOpenChange,
+  onNameChange,
+  onConfirm,
+}: {
+  pending: PendingWorkspaceMutation;
+  busy: boolean;
+  onOpenChange: (open: boolean) => void;
+  onNameChange: (name: string) => void;
+  onConfirm: () => Promise<void>;
+}) {
+  const { t } = useTranslation(["explorer", "common"]);
+  const isTextInput =
+    pending?.kind === "createFolder" || pending?.kind === "createFile" || pending?.kind === "rename";
+  const title =
+    pending?.kind === "createFolder"
+      ? t("newFolder")
+      : pending?.kind === "createFile"
+        ? t("newFile")
+        : pending?.kind === "rename"
+          ? t("rename")
+          : t("moveToTrash");
+  return (
+    <Dialog open={pending !== null} onOpenChange={onOpenChange}>
+      <DialogContent className="max-w-[420px]">
+        <DialogTitle>{title}</DialogTitle>
+        <DialogDescription>
+          {pending?.kind === "trash" ? t("confirmMoveToTrash", { name: pending.node.name }) : title}
+        </DialogDescription>
+        {isTextInput && pending && "name" in pending && (
+          <Input
+            autoFocus
+            value={pending.name}
+            disabled={busy}
+            aria-label={title}
+            onChange={(event) => onNameChange(event.target.value)}
+            onKeyDown={(event) => {
+              if (event.key === "Enter") void onConfirm();
+            }}
+          />
+        )}
+        <div className="mt-5 flex justify-end gap-2">
+          <Button disabled={busy} onClick={() => onOpenChange(false)}>
+            {t("cancel", { ns: "common" })}
+          </Button>
+          <Button
+            variant={pending?.kind === "trash" ? "danger" : "primary"}
+            disabled={busy}
+            onClick={() => void onConfirm()}
+          >
+            {t("confirm", { ns: "common" })}
+          </Button>
+        </div>
+      </DialogContent>
+    </Dialog>
   );
 }

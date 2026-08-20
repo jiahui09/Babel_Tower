@@ -99,6 +99,38 @@ textarea,
   line-height: var(--editor-line-height);
 }
 
+.translation-block--heading {
+  font-size: 1.2em;
+  font-weight: 700;
+}
+
+.translation-block--quote {
+  border-left: 3px solid var(--border-strong);
+  padding-left: 0.8em;
+  color: var(--text-secondary);
+}
+
+.translation-block--listItem {
+  position: relative;
+  padding-left: 1.25em;
+}
+
+.translation-block--listItem::before {
+  position: absolute;
+  margin-left: -0.95em;
+  color: var(--text-muted);
+  content: "•";
+}
+
+.translation-token {
+  border: 1px solid var(--border-strong);
+  border-radius: 3px;
+  padding: 0 0.2em;
+  color: var(--text-secondary);
+  font-family: ui-monospace, SFMono-Regular, Menlo, monospace;
+  font-size: 0.88em;
+}
+
 :focus-visible {
   box-shadow: 0 0 0 3px color-mix(in srgb, var(--focus) 72%, transparent);
 }

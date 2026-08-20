@@ -6,6 +6,7 @@ import { workItemQuery } from "../../queries/project";
 import { useWorkbenchStore } from "../../stores/workbench";
 import { DocumentTabs } from "./document-tabs";
 import { TranslationEditor } from "./translation-editor";
+import { WorkspaceFileEditor } from "./workspace-file-editor";
 
 export function SecondaryEditorGroup({
   projectId,
@@ -18,8 +19,10 @@ export function SecondaryEditorGroup({
   const bridge = useDesktopBridge();
   const queryClient = useQueryClient();
   const tabs = useWorkbenchStore((state) => state.tabs);
+  const primaryGroup = useWorkbenchStore((state) => state.groups.find((item) => item.id === "primary"));
   const group = useWorkbenchStore((state) => state.groups.find((item) => item.id === "secondary"));
   const activeTab = tabs.find((tab) => tab.id === group?.activeTabId);
+  const mirrorsPrimary = Boolean(activeTab && primaryGroup?.tabIds.includes(activeTab.id));
   const unitId = activeTab?.unitId ?? fallbackUnitId;
   const item = useQuery({
     ...workItemQuery(bridge, projectId, unitId ?? ""),
@@ -48,8 +51,10 @@ export function SecondaryEditorGroup({
   return (
     <section className="grid h-full min-h-0 grid-rows-[32px_1fr]" aria-label={t("secondaryPreview")}>
       <DocumentTabs groupId="secondary" />
-      <div className="min-h-0 overflow-auto bg-[var(--surface)] p-4">
-        {item.isPending ? (
+      <div className={activeTab?.kind === "workspaceFile" ? "min-h-0 overflow-hidden bg-[var(--surface)]" : "min-h-0 overflow-auto bg-[var(--surface)] p-4"}>
+        {activeTab?.kind === "workspaceFile" ? (
+          <WorkspaceFileEditor tab={activeTab} readOnly={mirrorsPrimary} />
+        ) : item.isPending ? (
           <p className="text-xs text-[var(--text-muted)]">{t("loading", { ns: "common" })}</p>
         ) : item.isError ? (
           <p className="text-xs text-[var(--danger)]">{item.error.message}</p>
@@ -73,6 +78,7 @@ export function SecondaryEditorGroup({
                 unitId={unitId ?? ""}
                 document={item.data.translation}
                 onPersist={persist}
+                readOnly={mirrorsPrimary}
                 onDirtyChange={(dirty) => activeTab && markTabDirty(activeTab.id, dirty)}
                 registerFlush={activeTab ? (flusher) => registerTabFlusher(activeTab.id, flusher) : undefined}
               />

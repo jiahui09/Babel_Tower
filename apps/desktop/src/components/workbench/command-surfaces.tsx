@@ -140,11 +140,10 @@ function PaletteItem({ descriptor, context }: { descriptor: CommandDescriptor; c
 }
 
 async function runCommand(descriptor: CommandDescriptor, context: CommandContext) {
-  const setSaveState = useWorkbenchStore.getState().setSaveState;
   try {
     await descriptor.run(context);
-  } catch {
-    setSaveState("error");
+  } catch (reason) {
+    useWorkbenchStore.getState().setCommandError(reason instanceof Error ? reason.message : String(reason));
   }
 }
 

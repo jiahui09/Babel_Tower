@@ -10,17 +10,19 @@ import {
   Search,
   ShieldCheck,
 } from "lucide-react";
-import { useEffect, useMemo, useState } from "react";
+import { useEffect, useMemo, useRef, useState } from "react";
 import { useTranslation } from "react-i18next";
 
 import type { CommandContext } from "../../commands/registry";
-import { useDesktopBridge, type ProjectTreeNode } from "../../platform/desktop-bridge";
+import { useDesktopBridge, type ProjectTreeNode, type WorkspaceStateV1 } from "../../platform/desktop-bridge";
 import { bootstrapQuery, openProjectQuery, projectSnapshotQuery } from "../../queries/project";
 import { useWorkbenchStore, type WorkbenchTab } from "../../stores/workbench";
+import { useWorkspaceStore } from "../../stores/workspace";
 import { Button, buttonVariants } from "../ui/button";
 import { ResizableHandle, ResizablePanel, ResizablePanelGroup } from "../ui/resizable";
 import { Tooltip } from "../ui/tooltip";
 import { ApplicationMenubar, CommandPalette, useCommandShortcuts } from "./command-surfaces";
+import { CommandFeedback } from "./command-feedback";
 import { DocumentTabs } from "./document-tabs";
 import { InspectorPanelView } from "./inspector-panel";
 import { ProblemsPanel } from "./problems-panel";
@@ -28,6 +30,7 @@ import { ProjectExplorer } from "./project-explorer";
 import { SaveIndicator } from "./save-indicator";
 import { SecondaryEditorGroup } from "./secondary-editor-group";
 import { WorkspaceSwitcher } from "./workspace-switcher";
+import { WorkspaceFileEditor } from "./workspace-file-editor";
 
 export function AppShell({ projectId }: { projectId: string }) {
   const { t } = useTranslation(["workbench", "common", "menu", "errors"]);
@@ -54,8 +57,17 @@ export function AppShell({ projectId }: { projectId: string }) {
   const toggleFocusMode = useWorkbenchStore((state) => state.toggleFocusMode);
   const setCommandPaletteOpen = useWorkbenchStore((state) => state.setCommandPaletteOpen);
   const setSettingsOpen = useWorkbenchStore((state) => state.setSettingsOpen);
+  const setCommandError = useWorkbenchStore((state) => state.setCommandError);
   const setPanelWidths = useWorkbenchStore((state) => state.setPanelWidths);
   const openTab = useWorkbenchStore((state) => state.openTab);
+  const revealWorkspaceNode = useWorkspaceStore((state) => state.reveal);
+  const restoreWorkspaceState = useWorkspaceStore((state) => state.restoreState);
+  const expandedNodeIds = useWorkspaceStore((state) => state.expandedNodeIds);
+  const workspaceSelectedNodeId = useWorkspaceStore((state) => state.selectedNodeId);
+  const tabs = useWorkbenchStore((state) => state.tabs);
+  const groups = useWorkbenchStore((state) => state.groups);
+  const replaceProjectSession = useWorkbenchStore((state) => state.replaceProjectSession);
+  const workspaceHydrated = useRef<string | null>(null);
   const activeTabId = useWorkbenchStore((state) => state.groups[0]?.activeTabId);
   const activeTab = useWorkbenchStore((state) => state.tabs.find((tab) => tab.id === activeTabId));
   const secondaryHasTabs = useWorkbenchStore((state) =>
@@ -92,6 +104,70 @@ export function AppShell({ projectId }: { projectId: string }) {
       "primary",
     );
   }, [activeTab?.kind, openTab, pathname, projectId, snapshotQuery.data, t]);
+
+  useEffect(() => {
+    if (!openQuery.isSuccess || workspaceHydrated.current === projectId) return;
+    workspaceHydrated.current = projectId;
+    void bridge
+      .readWorkspaceState(projectId)
+      .then((state) => {
+        restoreWorkspaceState(projectId, state);
+        if (!state) return;
+        const restoredTabs: WorkbenchTab[] = state.tabs.flatMap((tab) => {
+          if (!isWorkbenchTabKind(tab.kind)) return [];
+          return [
+            {
+              id: tab.id,
+              projectId,
+              kind: tab.kind,
+              title: tab.title,
+              uri: tab.uri,
+              nodeId: tab.id.startsWith("file:") ? tab.id.slice(5) : undefined,
+              isReadonly: tab.readonly,
+              pinned: tab.pinned,
+              dirty: false,
+            },
+          ];
+        });
+        replaceProjectSession(projectId, restoredTabs, state.groups);
+      })
+      .catch((reason) => setCommandError(reason instanceof Error ? reason.message : String(reason)));
+  }, [bridge, openQuery.isSuccess, projectId, replaceProjectSession, restoreWorkspaceState, setCommandError]);
+
+  useEffect(() => {
+    if (workspaceHydrated.current !== projectId || !openQuery.isSuccess) return;
+    const timer = window.setTimeout(() => {
+      const state: WorkspaceStateV1 = {
+        schemaVersion: 1,
+        tabs: tabs
+          .filter((tab) => tab.projectId === projectId)
+          .map((tab) => ({
+            id: tab.id,
+            uri: tab.uri,
+            title: tab.title,
+            kind: tab.kind,
+            readonly: tab.isReadonly ?? false,
+            pinned: tab.pinned ?? true,
+          })),
+        groups,
+        expandedNodeIds,
+        selectedNodeId: workspaceSelectedNodeId,
+      };
+      void bridge
+        .writeWorkspaceState(projectId, state)
+        .catch((reason) => setCommandError(reason instanceof Error ? reason.message : String(reason)));
+    }, 300);
+    return () => window.clearTimeout(timer);
+  }, [
+    bridge,
+    expandedNodeIds,
+    groups,
+    openQuery.isSuccess,
+    projectId,
+    setCommandError,
+    tabs,
+    workspaceSelectedNodeId,
+  ]);
 
   const context = useMemo<CommandContext>(
     () => ({
@@ -133,6 +209,10 @@ export function AppShell({ projectId }: { projectId: string }) {
   );
   useCommandShortcuts(context);
 
+  if (bootstrap.isError) {
+    return <ProjectLoadFailure error={bootstrap.error} onRetry={() => void bootstrap.refetch()} />;
+  }
+
   if (bootstrap.isSuccess && !projectEntry) {
     return (
       <div className="grid h-full place-items-center bg-[var(--surface)] p-8">
@@ -149,41 +229,45 @@ export function AppShell({ projectId }: { projectId: string }) {
     );
   }
 
-  if (bootstrap.isPending || openQuery.isPending || snapshotQuery.isPending) {
+  if (openQuery.isError || snapshotQuery.isError) {
+    const loadError = openQuery.error ?? snapshotQuery.error;
+    return loadError ? (
+      <ProjectLoadFailure error={loadError} onRetry={() => void openQuery.refetch()} />
+    ) : null;
+  }
+
+  if (
+    bootstrap.isPending ||
+    (Boolean(projectEntry) && openQuery.isPending) ||
+    (openQuery.isSuccess && snapshotQuery.isPending)
+  ) {
     return (
       <div className="grid h-full place-items-center bg-[var(--surface)] text-sm text-[var(--text-muted)]">
         {t("common:loading")}
       </div>
     );
   }
-  if (bootstrap.isError || openQuery.isError || snapshotQuery.isError) {
-    const loadError = bootstrap.error ?? openQuery.error ?? snapshotQuery.error;
-    return (
-      <div className="grid h-full place-items-center bg-[var(--surface)] p-8">
-        <section className="max-w-[560px] border border-[var(--border)] bg-[var(--surface-raised)] p-6">
-          <h1 className="m-0 text-base font-semibold">{t("workbench:projectUnavailable")}</h1>
-          <p className="mt-3 text-sm leading-6 text-[var(--text-secondary)]">
-            {t("workbench:projectUnavailableDetail")}
-          </p>
-          <pre className="max-h-32 overflow-auto bg-[var(--surface-inset)] p-3 text-xs text-[var(--danger)]">
-            {loadError instanceof Error ? loadError.message : String(loadError)}
-          </pre>
-          <div className="mt-4 flex gap-2">
-            <Link to="/" className={buttonVariants({ variant: "secondary" })}>
-              {t("common:back")}
-            </Link>
-            <Button variant="primary" onClick={() => void snapshotQuery.refetch()}>
-              {t("common:retry")}
-            </Button>
-          </div>
-        </section>
-      </div>
-    );
-  }
-
   const snapshot = snapshotQuery.data;
+  if (!snapshot) return null;
   const onActivateTab = (tab: WorkbenchTab) => navigateToTab(tab, projectId, navigate);
   const openNode = (node: ProjectTreeNode) => {
+    if (!node.capabilities.open) return;
+    revealWorkspaceNode(node.id);
+    if (node.section === "workspace") {
+      openTab({
+        id: `file:${node.id}`,
+        projectId,
+        kind: "workspaceFile",
+        title: node.name,
+        nodeId: node.id,
+        uri: node.mappedPath,
+        isReadonly: false,
+        pinned: true,
+        dirty: false,
+      });
+      return;
+    }
+    if (node.section !== "source" || node.kind !== "text") return;
     openTab({
       id: `source:${node.id}`,
       projectId,
@@ -275,7 +359,11 @@ export function AppShell({ projectId }: { projectId: string }) {
                 <main className="grid h-full min-h-0 grid-rows-[32px_1fr]">
                   <DocumentTabs groupId="primary" onActivate={onActivateTab} />
                   <div className="min-h-0 overflow-hidden">
-                    <Outlet />
+                    {activeTab?.kind === "workspaceFile" ? (
+                      <WorkspaceFileEditor tab={activeTab} />
+                    ) : (
+                      <Outlet />
+                    )}
                   </div>
                 </main>
               </ResizablePanel>
@@ -288,7 +376,7 @@ export function AppShell({ projectId }: { projectId: string }) {
             <main className="grid h-full min-h-0 grid-rows-[32px_1fr]">
               <DocumentTabs groupId="primary" onActivate={onActivateTab} />
               <div className="min-h-0 overflow-hidden">
-                <Outlet />
+                {activeTab?.kind === "workspaceFile" ? <WorkspaceFileEditor tab={activeTab} /> : <Outlet />}
               </div>
             </main>
           )}
@@ -320,6 +408,32 @@ export function AppShell({ projectId }: { projectId: string }) {
         <span className="ml-auto">#{snapshot.project.commitSequence}</span>
       </footer>
       <CommandPalette context={context} />
+      <CommandFeedback />
+    </div>
+  );
+}
+
+function ProjectLoadFailure({ error, onRetry }: { error: Error; onRetry: () => void }) {
+  const { t } = useTranslation(["workbench", "common"]);
+  return (
+    <div className="grid h-full place-items-center bg-[var(--surface)] p-8">
+      <section className="max-w-[560px] border border-[var(--border)] bg-[var(--surface-raised)] p-6">
+        <h1 className="m-0 text-base font-semibold">{t("workbench:projectUnavailable")}</h1>
+        <p className="mt-3 text-sm leading-6 text-[var(--text-secondary)]">
+          {t("workbench:projectUnavailableDetail")}
+        </p>
+        <pre className="max-h-32 overflow-auto bg-[var(--surface-inset)] p-3 text-xs text-[var(--danger)]">
+          {error.message}
+        </pre>
+        <div className="mt-4 flex gap-2">
+          <Link to="/" className={buttonVariants({ variant: "secondary" })}>
+            {t("common:back")}
+          </Link>
+          <Button variant="primary" onClick={onRetry}>
+            {t("common:retry")}
+          </Button>
+        </div>
+      </section>
     </div>
   );
 }
@@ -365,6 +479,7 @@ function tabForPath(
 }
 
 function navigateToTab(tab: WorkbenchTab, projectId: string, navigate: ReturnType<typeof useNavigate>) {
+  if (tab.kind === "workspaceFile") return;
   if (tab.id === "units") return void navigate({ to: "/projects/$projectId/units", params: { projectId } });
   if (tab.id === "resources")
     return void navigate({ to: "/projects/$projectId/resources", params: { projectId } });
@@ -384,4 +499,8 @@ function navigateToTab(tab: WorkbenchTab, projectId: string, navigate: ReturnTyp
     params: { projectId },
     search: { unitId: undefined },
   });
+}
+
+function isWorkbenchTabKind(value: string): value is WorkbenchTab["kind"] {
+  return ["chapter", "unitCollection", "image", "source", "diff", "workspaceFile"].includes(value);
 }

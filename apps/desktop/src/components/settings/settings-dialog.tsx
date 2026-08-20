@@ -1,8 +1,9 @@
-import { useEffect, useState } from "react";
+import { useEffect, useRef, useState } from "react";
 import { useTranslation } from "react-i18next";
 
 import { useTheme } from "../../app/theme-provider";
 import { useDesktopBridge } from "../../platform/desktop-bridge";
+import type { AppSettingsV1, SettingsPatch } from "../../platform/desktop-bridge";
 import { useSettingsStore } from "../../stores/settings";
 import { useWorkbenchStore } from "../../stores/workbench";
 import { Dialog, DialogContent, DialogDescription, DialogTitle } from "../ui/dialog";
@@ -20,6 +21,8 @@ export function SettingsDialog() {
   const settings = useSettingsStore();
   const { setTheme } = useTheme();
   const [error, setError] = useState<string | null>(null);
+  const [saving, setSaving] = useState(false);
+  const persistedSettings = useRef<AppSettingsV1>(currentSettings(settings));
 
   useEffect(() => {
     void i18n.changeLanguage(settings.language);
@@ -35,12 +38,27 @@ export function SettingsDialog() {
     document.documentElement.style.setProperty("--editor-line-height", String(settings.lineHeight));
   }, [settings.density, settings.editorFontFamily, settings.lineHeight, settings.readingFontSize]);
 
-  const persist = (patch: Parameters<typeof bridge.patchSettings>[0]) => {
+  const persist = async (previous: AppSettingsV1, patch: SettingsPatch) => {
     setError(null);
-    void bridge.patchSettings(patch).catch((reason) => {
+    setSaving(true);
+    try {
+      const saved = await bridge.patchSettings(patch);
+      settings.replaceSettings(saved);
+      persistedSettings.current = saved;
+    } catch (reason) {
       const message = reason instanceof Error ? reason.message : String(reason);
-      if (!message.includes("not available") && !message.includes("not implemented")) setError(message);
-    });
+      settings.replaceSettings(previous);
+      persistedSettings.current = previous;
+      setError(message);
+    } finally {
+      setSaving(false);
+    }
+  };
+
+  const updateSetting = (patch: SettingsPatch, update: () => void) => {
+    const previous = persistedSettings.current;
+    update();
+    void persist(previous, patch);
   };
 
   return (
@@ -54,10 +72,10 @@ export function SettingsDialog() {
           <Label>{t("language")}</Label>
           <Select
             value={settings.language}
-            onValueChange={(value: "zh-CN" | "en-US") => {
-              settings.setLanguage(value);
-              persist({ language: value });
-            }}
+            disabled={saving}
+            onValueChange={(value: "zh-CN" | "en-US") =>
+              updateSetting({ language: value }, () => settings.setLanguage(value))
+            }
           >
             <SelectTrigger>
               <SelectValue />
@@ -70,10 +88,10 @@ export function SettingsDialog() {
           <Label>{t("theme")}</Label>
           <Select
             value={settings.theme}
-            onValueChange={(value: "light" | "dark" | "system") => {
-              settings.setTheme(value);
-              persist({ theme: value });
-            }}
+            disabled={saving}
+            onValueChange={(value: "light" | "dark" | "system") =>
+              updateSetting({ theme: value }, () => settings.setTheme(value))
+            }
           >
             <SelectTrigger>
               <SelectValue />
@@ -87,10 +105,10 @@ export function SettingsDialog() {
           <Label>{t("density")}</Label>
           <Select
             value={settings.density}
-            onValueChange={(value: "compact" | "comfortable") => {
-              settings.setDensity(value);
-              persist({ density: value });
-            }}
+            disabled={saving}
+            onValueChange={(value: "compact" | "comfortable") =>
+              updateSetting({ density: value }, () => settings.setDensity(value))
+            }
           >
             <SelectTrigger>
               <SelectValue />
@@ -108,7 +126,10 @@ export function SettingsDialog() {
             id="editor-font"
             value={settings.editorFontFamily}
             onChange={(event) => settings.setEditorFontFamily(event.target.value)}
-            onBlur={() => persist({ editorFontFamily: settings.editorFontFamily })}
+            onBlur={() =>
+              void persist(persistedSettings.current, { editorFontFamily: settings.editorFontFamily })
+            }
+            disabled={saving}
           />
           <Label htmlFor="reading-size">{t("readingFontSize")}</Label>
           <Input
@@ -117,8 +138,14 @@ export function SettingsDialog() {
             min={12}
             max={32}
             value={settings.readingFontSize}
-            onChange={(event) => settings.setReadingFontSize(Number(event.target.value))}
-            onBlur={() => persist({ readingFontSize: settings.readingFontSize })}
+            onChange={(event) => {
+              const value = Number(event.target.value);
+              if (Number.isFinite(value)) settings.setReadingFontSize(clamp(value, 12, 32));
+            }}
+            onBlur={() =>
+              void persist(persistedSettings.current, { readingFontSize: settings.readingFontSize })
+            }
+            disabled={saving}
           />
           <Label htmlFor="line-height">{t("lineHeight")}</Label>
           <Input
@@ -128,21 +155,53 @@ export function SettingsDialog() {
             max={2.4}
             step={0.1}
             value={settings.lineHeight}
-            onChange={(event) => settings.setLineHeight(Number(event.target.value))}
-            onBlur={() => persist({ lineHeight: settings.lineHeight })}
+            onChange={(event) => {
+              const value = Number(event.target.value);
+              if (Number.isFinite(value)) settings.setLineHeight(clamp(value, 1.2, 2.4));
+            }}
+            onBlur={() => void persist(persistedSettings.current, { lineHeight: settings.lineHeight })}
+            disabled={saving}
           />
           <Label htmlFor="word-wrap">{t("wordWrap")}</Label>
           <Switch
             id="word-wrap"
             checked={settings.wordWrap}
-            onCheckedChange={(checked) => {
-              settings.setWordWrap(checked);
-              persist({ wordWrap: checked });
-            }}
+            disabled={saving}
+            onCheckedChange={(checked) =>
+              updateSetting({ wordWrap: checked }, () => settings.setWordWrap(checked))
+            }
           />
         </div>
-        {error && <p className="mb-0 mt-4 text-xs text-[var(--danger)]">{error}</p>}
+        {saving && (
+          <p className="mb-0 mt-4 text-xs text-[var(--text-muted)]" role="status">
+            {t("saving")}
+          </p>
+        )}
+        {error && (
+          <p className="mb-0 mt-4 text-xs text-[var(--danger)]" role="alert">
+            {error}
+          </p>
+        )}
       </DialogContent>
     </Dialog>
   );
+}
+
+function clamp(value: number, min: number, max: number) {
+  return Math.min(Math.max(value, min), max);
+}
+
+function currentSettings(settings: AppSettingsV1): AppSettingsV1 {
+  return {
+    schemaVersion: settings.schemaVersion,
+    language: settings.language,
+    theme: settings.theme,
+    density: settings.density,
+    editorFontFamily: settings.editorFontFamily,
+    readingFontSize: settings.readingFontSize,
+    lineHeight: settings.lineHeight,
+    wordWrap: settings.wordWrap,
+    shortcutOverrides: settings.shortcutOverrides,
+    panelWidths: settings.panelWidths,
+  };
 }

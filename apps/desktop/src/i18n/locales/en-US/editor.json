@@ -8,6 +8,11 @@
   "italic": "Italic",
   "strike": "Strikethrough",
   "code": "Inline code",
+  "heading": "Heading block",
+  "quote": "Quote block",
+  "list": "List item",
+  "undo": "Undo local input",
+  "redo": "Redo local input",
   "previousUnit": "Previous unit",
   "nextUnit": "Next unit",
   "closeDirtyTitle": "Close an unsaved tab?",
@@ -16,5 +21,8 @@
   "copyDraft": "Copy draft",
   "saveConflict": "The translation changed elsewhere. Your local text is still preserved.",
   "openInOtherGroup": "Open in other editor group",
-  "secondaryPreview": "Other editor group"
+  "secondaryPreview": "Other editor group",
+  "saveFile": "Save file",
+  "closeOthers": "Close other tabs",
+  "closeRight": "Close tabs to the right"
 }
