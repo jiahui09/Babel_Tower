@@ -1,6 +1,6 @@
 import { createFileRoute } from "@tanstack/react-router";
 import { ChevronLeft, ChevronRight, ImageOff, ScanText, WandSparkles } from "lucide-react";
-import { useEffect, useState } from "react";
+import { useCallback, useEffect, useState } from "react";
 import { useTranslation } from "react-i18next";
 
 import { TranslationEditor } from "../components/workbench/translation-editor";
@@ -240,7 +240,11 @@ function ResourcesPage() {
           <div className="mt-2 border border-[var(--border)] bg-[var(--surface)] p-3 text-sm leading-6 text-[var(--text-secondary)]">
             {recognizedText || item.sourceText || t("workbench:emptyText")}
           </div>
-          <SourceCorrection item={item} />
+          <SourceCorrection
+            key={item.unitId}
+            item={item}
+            registerFlush={(flusher) => registerTabFlusher("resources", flusher)}
+          />
           <p className="mb-0 mt-6 text-xs font-semibold text-[var(--text-secondary)]">
             {t("workbench:manualTranslation")}
           </p>
@@ -304,14 +308,24 @@ function ResourcesPage() {
   );
 }
 
-function SourceCorrection({ item }: { item: ResourceQueueItem }) {
+function SourceCorrection({
+  item,
+  registerFlush,
+}: {
+  item: ResourceQueueItem;
+  registerFlush: (flusher: () => Promise<boolean>) => () => void;
+}) {
   const bridge = useDesktopBridge();
   const { t } = useTranslation(["workbench", "common"]);
   const [text, setText] = useState(item.correctedSourceText ?? item.sourceText);
   const [state, setState] = useState<"idle" | "saving" | "saved" | "error">("idle");
   const markTabDirty = useWorkbenchStore((store) => store.markTabDirty);
 
-  const persist = async () => {
+  const persist = useCallback(async (): Promise<boolean> => {
+    if (text === (item.correctedSourceText ?? item.sourceText)) {
+      markTabDirty("resources", false);
+      return true;
+    }
     setState("saving");
     try {
       await bridge.saveImageRegionEdit({
@@ -322,10 +336,14 @@ function SourceCorrection({ item }: { item: ResourceQueueItem }) {
       });
       setState("saved");
       markTabDirty("resources", false);
+      return true;
     } catch {
       setState("error");
+      return false;
     }
-  };
+  }, [bridge, item, markTabDirty, text]);
+
+  useEffect(() => registerFlush(persist), [persist, registerFlush]);
 
   return (
     <div className="mt-4">

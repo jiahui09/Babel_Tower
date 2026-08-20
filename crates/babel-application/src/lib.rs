@@ -1599,6 +1599,7 @@ impl Kernel {
         let mut store = ProjectStore::open(root.join("project.sqlite3"))?;
         store.recover_interrupted_tasks(now_millis()?)?;
         recover_workspace_operations(&mut store, &root, now_millis()?)?;
+        recover_export_records(&root, store.connection())?;
         let project_id = store.project_id()?;
         let (interactive_tx, interactive_rx) = mpsc::sync_channel(WRITER_QUEUE_CAPACITY);
         let (background_tx, background_rx) = mpsc::sync_channel(WRITER_QUEUE_CAPACITY);
@@ -2794,6 +2795,17 @@ impl Kernel {
             .recv()
             .map_err(|_| KernelError::WriterUnavailable)?
     }
+}
+
+fn recover_export_records(root: &Path, connection: &rusqlite::Connection) -> Result<(), KernelError> {
+    let ids = {
+        let mut statement = connection.prepare("SELECT export_id FROM export_record WHERE state IN ('Preparing', 'PublishIntentRecorded')")?;
+        statement.query_map([], |row| row.get::<_, i64>(0))?.collect::<Result<Vec<_>, _>>()?
+    };
+    for export_id in ids {
+        babel_storage::recovery::recover(root, export_id)?;
+    }
+    Ok(())
 }
 
 fn assemble_work_item(

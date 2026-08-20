@@ -1,6 +1,7 @@
 import * as DialogPrimitive from "@radix-ui/react-dialog";
 import { X } from "lucide-react";
 import * as React from "react";
+import { useTranslation } from "react-i18next";
 
 import { cn } from "../../lib/utils";
 
@@ -13,6 +14,7 @@ export function DialogContent({
   children,
   ...props
 }: React.ComponentPropsWithoutRef<typeof DialogPrimitive.Content>) {
+  const { t } = useTranslation("common");
   return (
     <DialogPrimitive.Portal>
       <DialogPrimitive.Overlay className="fixed inset-0 z-50 bg-black/35" />
@@ -26,7 +28,7 @@ export function DialogContent({
         {children}
         <DialogPrimitive.Close className="absolute right-3 top-3 grid size-8 place-items-center rounded-[var(--radius)] text-[var(--text-muted)] hover:bg-[var(--surface-inset)]">
           <X size={16} />
-          <span className="sr-only">Close</span>
+          <span className="sr-only">{t("close")}</span>
         </DialogPrimitive.Close>
       </DialogPrimitive.Content>
     </DialogPrimitive.Portal>
@@ -52,4 +54,3 @@ export const DialogDescription = React.forwardRef<
   />
 ));
 DialogDescription.displayName = "DialogDescription";
-

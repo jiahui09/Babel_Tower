@@ -18,13 +18,15 @@ function SourcePage() {
   const activeTabId = useWorkbenchStore((state) => state.groups[0]?.activeTabId);
   const tab = useWorkbenchStore((state) => state.tabs.find((item) => item.id === activeTabId));
   const snapshot = useQuery(projectSnapshotQuery(bridge, projectId));
-  const unitId = tab?.unitId ?? snapshot.data?.units[0]?.unitId ?? "";
+  const unitId =
+    tab?.unitId ?? snapshot.data?.navigation?.position.unitId ?? snapshot.data?.currentUnit?.unitId ?? "";
   const item = useQuery({ ...workItemQuery(bridge, projectId, unitId), enabled: unitId.length > 0 });
   const openTab = useWorkbenchStore((state) => state.openTab);
   const navigate = useNavigate();
   if (snapshot.isPending || item.isPending) return <Centered text={t("loading", { ns: "common" })} />;
   if (snapshot.isError || item.isError)
     return <Centered text={(snapshot.error ?? item.error)?.message ?? ""} />;
+  if (!unitId || !item.data) return <Centered text={t("noSource", { ns: "common" })} />;
   return (
     <div className="grid h-full min-h-0 grid-rows-[36px_1fr]">
       <div className="flex items-center justify-end border-b border-[var(--border)] px-2">

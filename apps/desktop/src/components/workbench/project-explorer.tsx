@@ -1,5 +1,16 @@
 import { useQuery, useQueryClient } from "@tanstack/react-query";
-import { ChevronRight, FilePlus, FileText, Folder, Image, Pencil, RotateCcw, Search, Trash2, TreePine } from "lucide-react";
+import {
+  ChevronRight,
+  FilePlus,
+  FileText,
+  Folder,
+  Image,
+  Pencil,
+  RotateCcw,
+  Search,
+  Trash2,
+  TreePine,
+} from "lucide-react";
 import { Button as AriaButton, Tree, TreeItem, TreeItemContent } from "react-aria-components";
 import { useTranslation } from "react-i18next";
 import { useState } from "react";
@@ -42,7 +53,7 @@ export function ProjectExplorer({
     setMutationError(null);
     try {
       await bridge.mutateWorkspace(request);
-      await queryClient.invalidateQueries({ queryKey: ["project-tree", projectId] });
+      await queryClient.invalidateQueries({ queryKey: ["project", projectId, "tree"] });
     } catch (error) {
       setMutationError(error instanceof Error ? error.message : String(error));
     } finally {
@@ -52,7 +63,8 @@ export function ProjectExplorer({
 
   const createFolder = () => {
     const name = globalThis.prompt(t("newFolder"));
-    if (name?.trim()) void mutate({ kind: "createFolder", projectId, parentId: "workspace-root", name: name.trim() });
+    if (name?.trim())
+      void mutate({ kind: "createFolder", projectId, parentId: "workspace-root", name: name.trim() });
   };
 
   return (
@@ -141,7 +153,12 @@ export function ProjectExplorer({
             </Button>
           </div>
           {mutationError && <p className="m-0 p-2 text-xs text-[var(--danger)]">{mutationError}</p>}
-          <ProjectTree projectId={projectId} nodes={query.data.nodes} onOpenNode={onOpenNode} onMutate={mutate} />
+          <ProjectTree
+            projectId={projectId}
+            nodes={query.data.nodes}
+            onOpenNode={onOpenNode}
+            onMutate={mutate}
+          />
         </ScrollArea>
       )}
     </aside>
@@ -211,9 +228,18 @@ function ProjectTree({
                     </div>
                   )}
                 </TreeItemContent>
-                {sectionNodes.filter((node) => node.parentId === root.id).map((node) => (
-                  <ProjectNode key={node.id} node={node} nodes={sectionNodes} projectId={projectId} onOpenNode={onOpenNode} onMutate={onMutate} />
-                ))}
+                {sectionNodes
+                  .filter((node) => node.parentId === root.id)
+                  .map((node) => (
+                    <ProjectNode
+                      key={node.id}
+                      node={node}
+                      nodes={sectionNodes}
+                      projectId={projectId}
+                      onOpenNode={onOpenNode}
+                      onMutate={onMutate}
+                    />
+                  ))}
               </TreeItem>
             ))}
         </TreeItem>
@@ -222,22 +248,96 @@ function ProjectTree({
   );
 }
 
-function ProjectNode({ node, nodes, projectId, onOpenNode, onMutate }: { node: ProjectTreeNode; nodes: ProjectTreeNode[]; projectId: string; onOpenNode: (node: ProjectTreeNode) => void; onMutate: (request: Parameters<ReturnType<typeof useDesktopBridge>["mutateWorkspace"]>[0]) => Promise<void> }) {
+function ProjectNode({
+  node,
+  nodes,
+  projectId,
+  onOpenNode,
+  onMutate,
+}: {
+  node: ProjectTreeNode;
+  nodes: ProjectTreeNode[];
+  projectId: string;
+  onOpenNode: (node: ProjectTreeNode) => void;
+  onMutate: (request: Parameters<ReturnType<typeof useDesktopBridge>["mutateWorkspace"]>[0]) => Promise<void>;
+}) {
   const { t } = useTranslation("explorer");
   const children = nodes.filter((candidate) => candidate.parentId === node.id);
   const recycled = node.id.startsWith("recycle/");
   return (
     <TreeItem id={node.id} textValue={node.name} onAction={() => node.capabilities.open && onOpenNode(node)}>
-      <TreeItemContent>{({ level, isSelected }) => (
-        <div className={cn("group flex h-7 items-center gap-1.5 rounded-[4px] pr-2 text-[var(--text-secondary)]", isSelected && "bg-[var(--selection)] text-[var(--selection-text)]")} style={{ paddingLeft: `${Math.max(level - 1, 0) * 14 + 8}px` }}>
-          {node.kind === "folder" ? <Folder size={14} /> : node.kind === "image" ? <Image size={14} /> : <FileText size={14} />}
-          <span className="min-w-0 flex-1 truncate">{node.name}</span>
-          {recycled && <button type="button" className="grid size-5 place-items-center opacity-0 group-hover:opacity-100" aria-label={t("restore")} onClick={(event) => { event.stopPropagation(); void onMutate({ kind: "restore", projectId, nodeId: node.id }); }}><RotateCcw size={12} /></button>}
-          {node.capabilities.rename && <button type="button" className="grid size-5 place-items-center opacity-0 group-hover:opacity-100" aria-label={t("rename")} onClick={(event) => { event.stopPropagation(); const name = globalThis.prompt(t("rename"), node.name); if (name?.trim() && name.trim() !== node.name) void onMutate({ kind: "rename", projectId, nodeId: node.id, name: name.trim() }); }}><Pencil size={12} /></button>}
-          {node.capabilities.delete && <button type="button" className="grid size-5 place-items-center opacity-0 group-hover:opacity-100" aria-label={t("moveToTrash")} onClick={(event) => { event.stopPropagation(); if (globalThis.confirm(t("confirmMoveToTrash", { name: node.name }))) void onMutate({ kind: "trash", projectId, nodeId: node.id }); }}><Trash2 size={12} /></button>}
-        </div>
-      )}</TreeItemContent>
-      {children.map((child) => <ProjectNode key={child.id} node={child} nodes={nodes} projectId={projectId} onOpenNode={onOpenNode} onMutate={onMutate} />)}
+      <TreeItemContent>
+        {({ level, isSelected }) => (
+          <div
+            className={cn(
+              "group flex h-7 items-center gap-1.5 rounded-[4px] pr-2 text-[var(--text-secondary)]",
+              isSelected && "bg-[var(--selection)] text-[var(--selection-text)]",
+            )}
+            style={{ paddingLeft: `${Math.max(level - 1, 0) * 14 + 8}px` }}
+          >
+            {node.kind === "folder" ? (
+              <Folder size={14} />
+            ) : node.kind === "image" ? (
+              <Image size={14} />
+            ) : (
+              <FileText size={14} />
+            )}
+            <span className="min-w-0 flex-1 truncate">{node.name}</span>
+            {recycled && (
+              <button
+                type="button"
+                className="grid size-5 place-items-center opacity-0 group-hover:opacity-100"
+                aria-label={t("restore")}
+                onClick={(event) => {
+                  event.stopPropagation();
+                  void onMutate({ kind: "restore", projectId, nodeId: node.id });
+                }}
+              >
+                <RotateCcw size={12} />
+              </button>
+            )}
+            {node.capabilities.rename && (
+              <button
+                type="button"
+                className="grid size-5 place-items-center opacity-0 group-hover:opacity-100"
+                aria-label={t("rename")}
+                onClick={(event) => {
+                  event.stopPropagation();
+                  const name = globalThis.prompt(t("rename"), node.name);
+                  if (name?.trim() && name.trim() !== node.name)
+                    void onMutate({ kind: "rename", projectId, nodeId: node.id, name: name.trim() });
+                }}
+              >
+                <Pencil size={12} />
+              </button>
+            )}
+            {node.capabilities.delete && (
+              <button
+                type="button"
+                className="grid size-5 place-items-center opacity-0 group-hover:opacity-100"
+                aria-label={t("moveToTrash")}
+                onClick={(event) => {
+                  event.stopPropagation();
+                  if (globalThis.confirm(t("confirmMoveToTrash", { name: node.name })))
+                    void onMutate({ kind: "trash", projectId, nodeId: node.id });
+                }}
+              >
+                <Trash2 size={12} />
+              </button>
+            )}
+          </div>
+        )}
+      </TreeItemContent>
+      {children.map((child) => (
+        <ProjectNode
+          key={child.id}
+          node={child}
+          nodes={nodes}
+          projectId={projectId}
+          onOpenNode={onOpenNode}
+          onMutate={onMutate}
+        />
+      ))}
     </TreeItem>
   );
 }

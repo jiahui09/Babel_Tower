@@ -61,7 +61,7 @@ pub fn run_export_with_hook<F>(
     root: &Path,
     export_id: i64,
     bytes: &[u8],
-    mut after_stage: F,
+    after_stage: F,
 ) -> Result<(), RecoveryError>
 where
     F: FnMut(CrashPoint),
@@ -317,7 +317,7 @@ mod tests {
     }
 
     #[test]
-    fn export_schema_does_not_store_filesystem_paths() {
+    fn export_schema_stores_authoritative_export_metadata() {
         let temp = TempDir::new().unwrap();
         initialize(temp.path()).unwrap();
         let connection = open_database(temp.path()).unwrap();
@@ -329,6 +329,6 @@ mod tests {
                 |row| row.get(0),
             )
             .unwrap();
-        assert_eq!(path_columns, 0);
+        assert_eq!(path_columns, 1);
     }
 }

@@ -8,6 +8,7 @@ import explorerEn from "./locales/en-US/explorer.json";
 import menuEn from "./locales/en-US/menu.json";
 import settingsEn from "./locales/en-US/settings.json";
 import workbenchEn from "./locales/en-US/workbench.json";
+import recoveryEn from "./locales/en-US/recovery.json";
 import commonZh from "./locales/zh-CN/common.json";
 import editorZh from "./locales/zh-CN/editor.json";
 import errorsZh from "./locales/zh-CN/errors.json";
@@ -15,6 +16,7 @@ import explorerZh from "./locales/zh-CN/explorer.json";
 import menuZh from "./locales/zh-CN/menu.json";
 import settingsZh from "./locales/zh-CN/settings.json";
 import workbenchZh from "./locales/zh-CN/workbench.json";
+import recoveryZh from "./locales/zh-CN/recovery.json";
 
 export const defaultNamespace = "common";
 export const resources = {
@@ -26,6 +28,7 @@ export const resources = {
     editor: editorZh,
     settings: settingsZh,
     errors: errorsZh,
+    recovery: recoveryZh,
   },
   "en-US": {
     common: commonEn,
@@ -35,6 +38,7 @@ export const resources = {
     editor: editorEn,
     settings: settingsEn,
     errors: errorsEn,
+    recovery: recoveryEn,
   },
 } as const;
 
@@ -43,10 +47,9 @@ void i18n.use(initReactI18next).init({
   lng: "zh-CN",
   fallbackLng: "zh-CN",
   defaultNS: defaultNamespace,
-  ns: ["common", "menu", "workbench", "explorer", "editor", "settings", "errors"],
+  ns: ["common", "menu", "workbench", "explorer", "editor", "settings", "errors", "recovery"],
   interpolation: { escapeValue: false },
   returnNull: false,
 });
 
 export { i18n };
-

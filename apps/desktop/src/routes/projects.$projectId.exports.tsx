@@ -87,8 +87,24 @@ function ExportsPage() {
                 key={record.id}
                 className="flex items-center justify-between border-b border-[var(--border)] p-4 last:border-b-0"
               >
-                <span className="text-sm">{record.path}</span>
-                <span className="text-xs text-[var(--text-muted)]">{record.status}</span>
+                <div className="min-w-0">
+                  <span className="block truncate text-sm">{record.path}</span>
+                  <span className="mt-1 block text-xs text-[var(--text-muted)]">
+                    {record.format} · {record.outputHash || t("workbench:hashUnavailable")}
+                  </span>
+                  {record.error && (
+                    <span className="mt-1 block text-xs text-[var(--danger)]">{record.error}</span>
+                  )}
+                </div>
+                <span
+                  className={
+                    record.status === "succeeded"
+                      ? "text-xs text-[var(--success)]"
+                      : "text-xs text-[var(--danger)]"
+                  }
+                >
+                  {t(`workbench:exportStatus.${record.status}`)}
+                </span>
               </div>
             ))}
           </div>
@@ -117,7 +133,7 @@ function State({
         <p>{text}</p>
         {onRetry && (
           <Button variant="secondary" onClick={onRetry}>
-            {retryLabel ?? "Retry"}
+            {retryLabel}
           </Button>
         )}
       </div>

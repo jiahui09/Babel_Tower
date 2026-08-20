@@ -802,6 +802,17 @@ fn project_tree(request: ProjectTreeRequest, state: State<'_, DesktopState>) -> 
         let database_path = kernel.database_path();
         let root = database_path.parent().ok_or_else(|| "项目目录不可用".to_owned())?;
         let mut nodes = Vec::new();
+        nodes.push(ProjectTreeNode { id: "source-root".to_owned(), parent_id: None, section: "source".to_owned(), kind: "root".to_owned(), name: "source".to_owned(), semantic_path: ".".to_owned(), mapped_path: None, capabilities: ProjectTreeCapabilities { open: false, create_child: false, rename: false, r#move: false, delete: false, reveal: false, drop: false } });
+        let mut after_local_index = -1;
+        loop {
+            let page = query.page_after(after_local_index, 256).map_err(|error| error.to_string())?;
+            if page.is_empty() { break; }
+            for unit in &page {
+                nodes.push(ProjectTreeNode { id: hex::encode(&unit.unit_id), parent_id: Some("source-root".to_owned()), section: "source".to_owned(), kind: "text".to_owned(), name: if unit.source_text.is_empty() { format!("#{}", unit.local_index + 1) } else { unit.source_text.chars().take(48).collect() }, semantic_path: hex::encode(&unit.source_unit_key), mapped_path: None, capabilities: ProjectTreeCapabilities { open: true, create_child: false, rename: false, r#move: false, delete: false, reveal: false, drop: false } });
+            }
+            after_local_index = page.last().map(|unit| unit.local_index).unwrap_or(after_local_index);
+            if page.len() < 256 { break; }
+        }
         for (id, section, name, directory) in [
             ("workspace-root", "workspace", "workspace", root.join("workspace")),
             ("recycle-root", "workspace", "recycle", root.join("recycle")),
@@ -1443,7 +1454,6 @@ fn create_export(request: ExportRequest, state: State<'_, DesktopState>) -> Resu
 }
 
 #[tauri::command]
-fn list_exports(state: State<'_, DesktopState>) -> Result<Vec<ExportRecord>, String> {
 fn list_exports(request: ListExportsRequest, state: State<'_, DesktopState>) -> Result<Vec<ExportRecord>, String> {
     with_kernel(&state, |kernel| {
         if request.project_id != hex::encode(kernel.project_id().as_bytes()) { return Err("导出项目与当前打开项目不一致".to_owned()); }

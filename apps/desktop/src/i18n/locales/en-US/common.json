@@ -12,5 +12,6 @@
   "notAvailable": "Not available",
   "saved": "Saved",
   "saving": "Saving",
-  "saveFailed": "Save failed"
+  "saveFailed": "Save failed",
+  "noSource": "No unit is available to view"
 }

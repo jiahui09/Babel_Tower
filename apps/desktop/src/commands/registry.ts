@@ -38,6 +38,7 @@ export interface CommandContext {
     toggleExplorer(): void;
     toggleInspector(): void;
     toggleFocusMode(): void;
+    refreshProject(): Promise<void>;
   };
 }
 
@@ -113,6 +114,7 @@ export const commandRegistry = [
         commandId: crypto.randomUUID().replace(/-/g, ""),
         createdAtMs: Date.now(),
       });
+      await context.actions.refreshProject();
     },
   }),
   command({
@@ -130,6 +132,7 @@ export const commandRegistry = [
         commandId: crypto.randomUUID().replace(/-/g, ""),
         createdAtMs: Date.now(),
       });
+      await context.actions.refreshProject();
     },
   }),
   command({

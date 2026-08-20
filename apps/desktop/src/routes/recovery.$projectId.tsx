@@ -1,4 +1,5 @@
 import { createFileRoute, Link } from "@tanstack/react-router";
+import { useTranslation } from "react-i18next";
 
 import { buttonVariants } from "../components/ui/button";
 
@@ -6,16 +7,15 @@ export const Route = createFileRoute("/recovery/$projectId")({ component: Recove
 
 function RecoveryPage() {
   const { projectId } = Route.useParams();
+  const { t } = useTranslation(["recovery", "common"]);
   return (
     <div className="grid h-full place-items-center bg-[var(--surface)]">
       <div className="w-[560px] border border-[var(--border)] bg-[var(--surface-raised)] p-6">
-        <h1 className="m-0 text-lg font-semibold">发现未确认的编辑内容</h1>
-        <p className="mt-3 text-sm leading-6 text-[var(--text-secondary)]">
-          上次关闭前仍有本地草稿。已保存的译文没有改变。
-        </p>
+        <h1 className="m-0 text-lg font-semibold">{t("title")}</h1>
+        <p className="mt-3 text-sm leading-6 text-[var(--text-secondary)]">{t("description")}</p>
         <div className="mt-6 flex justify-end gap-2">
           <Link to="/" className={buttonVariants({ variant: "secondary" })}>
-            返回项目库
+            {t("backToLibrary")}
           </Link>
           <Link
             to="/projects/$projectId/content"
@@ -23,7 +23,7 @@ function RecoveryPage() {
             search={{ unitId: undefined }}
             className={buttonVariants({ variant: "primary" })}
           >
-            恢复并继续
+            {t("resume")}
           </Link>
         </div>
       </div>

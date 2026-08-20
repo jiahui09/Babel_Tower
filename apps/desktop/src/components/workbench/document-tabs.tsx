@@ -6,7 +6,13 @@ import { useWorkbenchStore, type WorkbenchTab } from "../../stores/workbench";
 import { Button } from "../ui/button";
 import { Dialog, DialogContent, DialogDescription, DialogTitle } from "../ui/dialog";
 
-export function DocumentTabs({ groupId = "primary", onActivate }: { groupId?: "primary" | "secondary"; onActivate: (tab: WorkbenchTab) => void }) {
+export function DocumentTabs({
+  groupId = "primary",
+  onActivate,
+}: {
+  groupId?: "primary" | "secondary";
+  onActivate?: (tab: WorkbenchTab) => void;
+}) {
   const { t } = useTranslation(["editor", "common"]);
   const tabs = useWorkbenchStore((state) => state.tabs);
   const group = useWorkbenchStore((state) => state.groups.find((item) => item.id === groupId));
@@ -29,13 +35,22 @@ export function DocumentTabs({ groupId = "primary", onActivate }: { groupId?: "p
             data-active={group?.activeTabId === tab.id}
             onClick={() => {
               activateTab(tab.id, groupId);
-              onActivate(tab);
+              onActivate?.(tab);
             }}
           >
             {tab.dirty && <span className="size-1.5 shrink-0 rounded-full bg-[var(--accent)]" />}
             <span className="min-w-0 flex-1 truncate text-left">{tab.title}</span>
             {groupId === "primary" && (
-              <span role="button" tabIndex={0} className="grid size-5 shrink-0 place-items-center rounded-[4px] opacity-0 hover:bg-[var(--surface-inset)] group-hover:opacity-100" onClick={(event) => { event.stopPropagation(); splitTab(tab.id); }} aria-label={t("openInOtherGroup")}>
+              <span
+                role="button"
+                tabIndex={0}
+                className="grid size-5 shrink-0 place-items-center rounded-[4px] opacity-0 hover:bg-[var(--surface-inset)] group-hover:opacity-100"
+                onClick={(event) => {
+                  event.stopPropagation();
+                  splitTab(tab.id);
+                }}
+                aria-label={t("openInOtherGroup")}
+              >
                 <Columns2 size={12} />
               </span>
             )}

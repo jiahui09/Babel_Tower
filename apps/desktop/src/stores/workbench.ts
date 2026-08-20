@@ -146,7 +146,12 @@ export const useWorkbenchStore = create<WorkbenchState>()(
           const groups = state.groups.map((group) => {
             if (group.id !== targetGroup) return group;
             const tabIds = group.tabIds.filter((id) => id !== tabId);
-            return { ...group, tabIds, activeTabId: group.activeTabId === tabId ? (tabIds[tabIds.length - 1] ?? null) : group.activeTabId };
+            return {
+              ...group,
+              tabIds,
+              activeTabId:
+                group.activeTabId === tabId ? (tabIds[tabIds.length - 1] ?? null) : group.activeTabId,
+            };
           });
           const stillOpen = groups.some((group) => group.tabIds.includes(tabId));
           return { groups, tabs: stillOpen ? state.tabs : state.tabs.filter((tab) => tab.id !== tabId) };
@@ -165,11 +170,15 @@ export const useWorkbenchStore = create<WorkbenchState>()(
           focusedGroupId: "secondary",
         })),
       registerTabFlusher: (tabId, flusher) => {
-        set((state) => ({ flushers: { ...state.flushers, [tabId]: flusher } }));
+        const previous = useWorkbenchStore.getState().flushers[tabId];
+        const composed = previous ? async () => (await previous()) && (await flusher()) : flusher;
+        set((state) => ({ flushers: { ...state.flushers, [tabId]: composed } }));
         return () =>
           set((state) => {
+            if (state.flushers[tabId] !== composed) return state;
             const next = { ...state.flushers };
-            delete next[tabId];
+            if (previous) next[tabId] = previous;
+            else delete next[tabId];
             return { flushers: next };
           });
       },

@@ -87,50 +87,7 @@ export class TauriDesktopBridge implements DesktopBridge {
   }
 
   async projectTree(request: import("./types").ProjectTreeRequest) {
-    const [snapshot, mutableTree] = await Promise.all([
-      this.projectSnapshot(),
-      call<import("./types").ProjectTreeSnapshot>("project_tree", { request }),
-    ]);
-    return {
-      commitSequence: Math.max(snapshot.project.commitSequence, mutableTree.commitSequence),
-      nodes: [
-        {
-          id: "source-root",
-          parentId: null,
-          section: "source" as const,
-          kind: "root" as const,
-          name: "source",
-          semanticPath: ".",
-          capabilities: {
-            open: false,
-            createChild: false,
-            rename: false,
-            move: false,
-            delete: false,
-            reveal: false,
-            drop: false,
-          },
-        },
-        ...mutableTree.nodes,
-        ...snapshot.units.map((unit) => ({
-          id: unit.unitId,
-          parentId: "source-root",
-          section: "source" as const,
-          kind: "text" as const,
-          name: unit.sourceText.slice(0, 48) || `#${unit.localIndex + 1}`,
-          semanticPath: unit.sourceUnitKey,
-          capabilities: {
-            open: true,
-            createChild: false,
-            rename: false,
-            move: false,
-            delete: false,
-            reveal: false,
-            drop: false,
-          },
-        })),
-      ],
-    };
+    return call<import("./types").ProjectTreeSnapshot>("project_tree", { request });
   }
 
   searchProject(request: { projectId: string; query: string; limit?: number }) {

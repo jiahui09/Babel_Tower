@@ -35,6 +35,8 @@
   "noValidationIssues": "No issues require attention.",
   "openUnit": "Open unit",
   "exportRecords": "Export records",
+  "hashUnavailable": "Hash unavailable",
+  "exportStatus": { "running": "Running", "succeeded": "Succeeded", "failed": "Failed" },
   "exportOriginalSafe": "Create a new file; the original remains unchanged.",
   "newExport": "New export",
   "noExports": "No export records yet.",

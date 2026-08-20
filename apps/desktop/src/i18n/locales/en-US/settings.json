@@ -1,5 +1,7 @@
 {
   "title": "Settings",
+  "languageZh": "简体中文",
+  "languageEn": "English",
   "language": "Interface language",
   "theme": "Theme",
   "themeLight": "Light",

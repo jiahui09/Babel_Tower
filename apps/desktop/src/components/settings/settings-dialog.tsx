@@ -47,7 +47,9 @@ export function SettingsDialog() {
     <Dialog open={open} onOpenChange={setOpen}>
       <DialogContent>
         <DialogTitle>{t("title")}</DialogTitle>
-        <DialogDescription>{t("language")} · {t("theme")} · {t("editorFont")}</DialogDescription>
+        <DialogDescription>
+          {t("language")} · {t("theme")} · {t("editorFont")}
+        </DialogDescription>
         <div className="mt-5 grid grid-cols-[180px_1fr] items-center gap-x-5 gap-y-4">
           <Label>{t("language")}</Label>
           <Select
@@ -57,10 +59,12 @@ export function SettingsDialog() {
               persist({ language: value });
             }}
           >
-            <SelectTrigger><SelectValue /></SelectTrigger>
+            <SelectTrigger>
+              <SelectValue />
+            </SelectTrigger>
             <SelectContent>
-              <SelectItem value="zh-CN">简体中文</SelectItem>
-              <SelectItem value="en-US">English</SelectItem>
+              <SelectItem value="zh-CN">{t("languageZh")}</SelectItem>
+              <SelectItem value="en-US">{t("languageEn")}</SelectItem>
             </SelectContent>
           </Select>
           <Label>{t("theme")}</Label>
@@ -71,7 +75,9 @@ export function SettingsDialog() {
               persist({ theme: value });
             }}
           >
-            <SelectTrigger><SelectValue /></SelectTrigger>
+            <SelectTrigger>
+              <SelectValue />
+            </SelectTrigger>
             <SelectContent>
               <SelectItem value="light">{t("themeLight")}</SelectItem>
               <SelectItem value="dark">{t("themeDark")}</SelectItem>
@@ -86,7 +92,9 @@ export function SettingsDialog() {
               persist({ density: value });
             }}
           >
-            <SelectTrigger><SelectValue /></SelectTrigger>
+            <SelectTrigger>
+              <SelectValue />
+            </SelectTrigger>
             <SelectContent>
               <SelectItem value="compact">{t("densityCompact")}</SelectItem>
               <SelectItem value="comfortable">{t("densityComfortable")}</SelectItem>
@@ -138,4 +146,3 @@ export function SettingsDialog() {
     </Dialog>
   );
 }
-

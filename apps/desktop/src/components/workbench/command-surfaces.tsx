@@ -63,7 +63,7 @@ export function ApplicationMenubar({ context }: { context: CommandContext }) {
                   key={descriptor.id}
                   disabled={!availability.enabled}
                   title={availability.reasonKey ? t(availability.reasonKey as never) : undefined}
-                  onSelect={() => void descriptor.run(context)}
+                  onSelect={() => void runCommand(descriptor, context)}
                 >
                   <Icon size={15} />
                   {t(descriptor.labelKey as never)}
@@ -127,7 +127,7 @@ function PaletteItem({ descriptor, context }: { descriptor: CommandDescriptor; c
       disabled={!availability.enabled}
       onSelect={() => {
         setOpen(false);
-        void descriptor.run(context);
+        void runCommand(descriptor, context);
       }}
     >
       <Icon size={15} />
@@ -137,6 +137,15 @@ function PaletteItem({ descriptor, context }: { descriptor: CommandDescriptor; c
       )}
     </CommandItem>
   );
+}
+
+async function runCommand(descriptor: CommandDescriptor, context: CommandContext) {
+  const setSaveState = useWorkbenchStore.getState().setSaveState;
+  try {
+    await descriptor.run(context);
+  } catch {
+    setSaveState("error");
+  }
 }
 
 export function useCommandShortcuts(context: CommandContext) {
@@ -149,7 +158,7 @@ export function useCommandShortcuts(context: CommandContext) {
         const availability = descriptor.getAvailability(context);
         if (!availability.enabled) return;
         event.preventDefault();
-        void descriptor.run(context);
+        void runCommand(descriptor, context);
         return;
       }
     };

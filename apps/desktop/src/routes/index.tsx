@@ -20,7 +20,7 @@ function ProjectLibrary() {
   return (
     <div className="h-full overflow-auto bg-[var(--surface)]">
       <header className="flex h-12 items-center border-b border-[var(--border)] bg-[var(--surface-raised)] px-5">
-        <h1 className="m-0 text-base font-semibold">Babel Tower</h1>
+        <h1 className="m-0 text-base font-semibold">{t("appName", { ns: "common" })}</h1>
         <div className="ml-auto flex items-center gap-1">
           <Button
             variant="icon"

@@ -35,6 +35,8 @@
   "noValidationIssues": "没有发现需要处理的问题。",
   "openUnit": "定位到单元",
   "exportRecords": "导出记录",
+  "hashUnavailable": "哈希不可用",
+  "exportStatus": { "running": "进行中", "succeeded": "成功", "failed": "失败" },
   "exportOriginalSafe": "创建新文件，原件不会被修改。",
   "newExport": "新建导出",
   "noExports": "尚无导出记录。",

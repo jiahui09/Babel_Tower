@@ -12,5 +12,6 @@
   "notAvailable": "当前不可用",
   "saved": "已保存",
   "saving": "保存中",
-  "saveFailed": "保存失败"
+  "saveFailed": "保存失败",
+  "noSource": "当前没有可查看的单元"
 }

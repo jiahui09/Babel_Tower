@@ -40,29 +40,35 @@ function UnitsPage() {
     overscan: 8,
   });
 
-  const saveRow = useCallback(async (unit: UnitSummary) => {
-    const text = drafts[unit.unitId];
-    if (text === undefined || text === (unit.translation ?? "")) return true;
-    setSaveState("saving");
-    try {
-      const item = await bridge.workItem(projectId, unit.unitId);
-      await bridge.saveTranslationDocument({
-        projectId,
-        unitId: unit.unitId,
-        sourceUnitKey: unit.sourceUnitKey,
-        commandId: crypto.randomUUID().replace(/-/g, ""),
-        expectedRevisionId: item.revisionId,
-        document: plainTextDocument(text),
-        createdAtMs: Date.now(),
-      });
-      setSaveState("saved");
-      await queryClient.invalidateQueries({ queryKey: ["project", projectId] });
-      return true;
-    } catch (reason) {
-      setSaveState(reason instanceof Error && reason.message.includes("revision") ? "conflict" : "error");
-      return false;
-    }
-  }, [bridge, drafts, markTabDirty, projectId, queryClient, setSaveState]);
+  const saveRow = useCallback(
+    async (unit: UnitSummary) => {
+      const text = drafts[unit.unitId];
+      if (text === undefined || text === (unit.translation ?? "")) return true;
+      setSaveState("saving");
+      try {
+        const item = await bridge.workItem(projectId, unit.unitId);
+        await bridge.saveTranslationDocument({
+          projectId,
+          unitId: unit.unitId,
+          sourceUnitKey: unit.sourceUnitKey,
+          commandId: crypto.randomUUID().replace(/-/g, ""),
+          expectedRevisionId: item.revisionId,
+          document: plainTextDocument(text),
+          createdAtMs: Date.now(),
+        });
+        setSaveState("saved");
+        await Promise.all([
+          queryClient.invalidateQueries({ queryKey: ["project", projectId, "snapshot"] }),
+          queryClient.invalidateQueries({ queryKey: ["project", projectId, "work-item", unit.unitId] }),
+        ]);
+        return true;
+      } catch (reason) {
+        setSaveState(reason instanceof Error && reason.message.includes("revision") ? "conflict" : "error");
+        return false;
+      }
+    },
+    [bridge, drafts, projectId, queryClient, setSaveState],
+  );
 
   useEffect(
     () =>

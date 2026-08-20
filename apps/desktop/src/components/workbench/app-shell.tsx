@@ -1,4 +1,4 @@
-import { useQuery } from "@tanstack/react-query";
+import { useQuery, useQueryClient } from "@tanstack/react-query";
 import { Link, Outlet, useNavigate, useRouterState } from "@tanstack/react-router";
 import {
   ChevronLeft,
@@ -32,6 +32,7 @@ import { WorkspaceSwitcher } from "./workspace-switcher";
 export function AppShell({ projectId }: { projectId: string }) {
   const { t } = useTranslation(["workbench", "common", "menu", "errors"]);
   const bridge = useDesktopBridge();
+  const queryClient = useQueryClient();
   const navigate = useNavigate();
   const pathname = useRouterState({ select: (state) => state.location.pathname });
   const bootstrap = useQuery(bootstrapQuery(bridge));
@@ -57,7 +58,9 @@ export function AppShell({ projectId }: { projectId: string }) {
   const openTab = useWorkbenchStore((state) => state.openTab);
   const activeTabId = useWorkbenchStore((state) => state.groups[0]?.activeTabId);
   const activeTab = useWorkbenchStore((state) => state.tabs.find((tab) => tab.id === activeTabId));
-  const secondaryHasTabs = useWorkbenchStore((state) => Boolean(state.groups.find((group) => group.id === "secondary")?.tabIds.length));
+  const secondaryHasTabs = useWorkbenchStore((state) =>
+    Boolean(state.groups.find((group) => group.id === "secondary")?.tabIds.length),
+  );
   const splitRatio = useWorkbenchStore((state) => state.splitRatio);
   const setSplitRatio = useWorkbenchStore((state) => state.setSplitRatio);
   const wideWindow = useMediaQuery("(min-width: 1440px)");
@@ -106,6 +109,12 @@ export function AppShell({ projectId }: { projectId: string }) {
         toggleExplorer,
         toggleInspector,
         toggleFocusMode,
+        refreshProject: async () => {
+          await Promise.all([
+            queryClient.invalidateQueries({ queryKey: ["project", projectId, "snapshot"] }),
+            queryClient.invalidateQueries({ queryKey: ["project", projectId, "work-item"] }),
+          ]);
+        },
       },
     }),
     [
@@ -113,6 +122,7 @@ export function AppShell({ projectId }: { projectId: string }) {
       currentUnit?.unitId,
       navigate,
       projectId,
+      queryClient,
       setCommandPaletteOpen,
       setSettingsOpen,
       setProblemsOpen,
@@ -191,7 +201,9 @@ export function AppShell({ projectId }: { projectId: string }) {
     >
       <header className="flex items-center border-b border-[var(--border)] bg-[var(--surface-raised)] px-1">
         <ApplicationMenubar context={context} />
-        <span className="ml-auto pr-2 text-[11px] text-[var(--text-muted)]">Babel Tower</span>
+        <span className="ml-auto pr-2 text-[11px] text-[var(--text-muted)]">
+          {t("appName", { ns: "common" })}
+        </span>
       </header>
       <div className="flex min-w-0 items-center gap-2 border-b border-[var(--border)] bg-[var(--surface-raised)] px-2">
         <Link
@@ -254,10 +266,17 @@ export function AppShell({ projectId }: { projectId: string }) {
         <ResizablePanel id="editor" minSize={560}>
           {secondaryHasTabs ? (
             <ResizablePanelGroup orientation="horizontal" className="min-h-0">
-              <ResizablePanel id="primary-editor-group" defaultSize={splitRatio * 100} minSize={320} onResize={(size) => setSplitRatio(Math.max(0.25, Math.min(0.75, size.asPercentage / 100)))}>
+              <ResizablePanel
+                id="primary-editor-group"
+                defaultSize={splitRatio * 100}
+                minSize={320}
+                onResize={(size) => setSplitRatio(Math.max(0.25, Math.min(0.75, size.asPercentage / 100)))}
+              >
                 <main className="grid h-full min-h-0 grid-rows-[32px_1fr]">
                   <DocumentTabs groupId="primary" onActivate={onActivateTab} />
-                  <div className="min-h-0 overflow-hidden"><Outlet /></div>
+                  <div className="min-h-0 overflow-hidden">
+                    <Outlet />
+                  </div>
                 </main>
               </ResizablePanel>
               <ResizableHandle />
@@ -268,7 +287,9 @@ export function AppShell({ projectId }: { projectId: string }) {
           ) : (
             <main className="grid h-full min-h-0 grid-rows-[32px_1fr]">
               <DocumentTabs groupId="primary" onActivate={onActivateTab} />
-              <div className="min-h-0 overflow-hidden"><Outlet /></div>
+              <div className="min-h-0 overflow-hidden">
+                <Outlet />
+              </div>
             </main>
           )}
         </ResizablePanel>
