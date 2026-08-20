@@ -26,6 +26,7 @@ import { InspectorPanelView } from "./inspector-panel";
 import { ProblemsPanel } from "./problems-panel";
 import { ProjectExplorer } from "./project-explorer";
 import { SaveIndicator } from "./save-indicator";
+import { SecondaryEditorGroup } from "./secondary-editor-group";
 import { WorkspaceSwitcher } from "./workspace-switcher";
 
 export function AppShell({ projectId }: { projectId: string }) {
@@ -56,6 +57,9 @@ export function AppShell({ projectId }: { projectId: string }) {
   const openTab = useWorkbenchStore((state) => state.openTab);
   const activeTabId = useWorkbenchStore((state) => state.groups[0]?.activeTabId);
   const activeTab = useWorkbenchStore((state) => state.tabs.find((tab) => tab.id === activeTabId));
+  const secondaryHasTabs = useWorkbenchStore((state) => Boolean(state.groups.find((group) => group.id === "secondary")?.tabIds.length));
+  const splitRatio = useWorkbenchStore((state) => state.splitRatio);
+  const setSplitRatio = useWorkbenchStore((state) => state.setSplitRatio);
   const wideWindow = useMediaQuery("(min-width: 1440px)");
   const inspectorVisible = inspectorOpen && wideWindow && !focusMode;
   const explorerVisible = explorerOpen && !focusMode;
@@ -248,12 +252,25 @@ export function AppShell({ projectId }: { projectId: string }) {
           </>
         )}
         <ResizablePanel id="editor" minSize={560}>
-          <main className="grid h-full min-h-0 grid-rows-[32px_1fr]">
-            <DocumentTabs onActivate={onActivateTab} />
-            <div className="min-h-0 overflow-hidden">
-              <Outlet />
-            </div>
-          </main>
+          {secondaryHasTabs ? (
+            <ResizablePanelGroup orientation="horizontal" className="min-h-0">
+              <ResizablePanel id="primary-editor-group" defaultSize={splitRatio * 100} minSize={320} onResize={(size) => setSplitRatio(Math.max(0.25, Math.min(0.75, size.asPercentage / 100)))}>
+                <main className="grid h-full min-h-0 grid-rows-[32px_1fr]">
+                  <DocumentTabs groupId="primary" onActivate={onActivateTab} />
+                  <div className="min-h-0 overflow-hidden"><Outlet /></div>
+                </main>
+              </ResizablePanel>
+              <ResizableHandle />
+              <ResizablePanel id="secondary-editor-group" minSize={320}>
+                <SecondaryEditorGroup projectId={projectId} fallbackUnitId={currentUnit?.unitId ?? null} />
+              </ResizablePanel>
+            </ResizablePanelGroup>
+          ) : (
+            <main className="grid h-full min-h-0 grid-rows-[32px_1fr]">
+              <DocumentTabs groupId="primary" onActivate={onActivateTab} />
+              <div className="min-h-0 overflow-hidden"><Outlet /></div>
+            </main>
+          )}
         </ResizablePanel>
         {inspectorVisible && (
           <>

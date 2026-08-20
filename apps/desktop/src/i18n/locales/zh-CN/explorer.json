@@ -6,6 +6,8 @@
   "searchHint": "输入至少两个字符搜索原文和译文",
   "searching": "搜索中",
   "noSearchResults": "没有匹配结果",
+  "moveToTrash": "移入回收区",
+  "confirmMoveToTrash": "确定将 {{name}} 移入回收区吗？",
   "source": "来源原件",
   "workspace": "工作资料",
   "derived": "派生资源",

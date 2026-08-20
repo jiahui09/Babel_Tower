@@ -1,7 +1,7 @@
 import { useQuery, useQueryClient } from "@tanstack/react-query";
 import { createFileRoute } from "@tanstack/react-router";
 import { useVirtualizer } from "@tanstack/react-virtual";
-import { useMemo, useRef, useState } from "react";
+import { useCallback, useEffect, useMemo, useRef, useState } from "react";
 import { useTranslation } from "react-i18next";
 
 import { Input } from "../components/ui/input";
@@ -23,6 +23,7 @@ function UnitsPage() {
   const [drafts, setDrafts] = useState<Record<string, string>>({});
   const setSaveState = useWorkbenchStore((state) => state.setSaveState);
   const markTabDirty = useWorkbenchStore((state) => state.markTabDirty);
+  const registerTabFlusher = useWorkbenchStore((state) => state.registerTabFlusher);
   const rows = useMemo(() => {
     const normalized = query.trim().toLocaleLowerCase();
     return (snapshot.data?.units ?? []).filter((unit) => {
@@ -39,9 +40,9 @@ function UnitsPage() {
     overscan: 8,
   });
 
-  const saveRow = async (unit: UnitSummary) => {
+  const saveRow = useCallback(async (unit: UnitSummary) => {
     const text = drafts[unit.unitId];
-    if (text === undefined || text === (unit.translation ?? "")) return;
+    if (text === undefined || text === (unit.translation ?? "")) return true;
     setSaveState("saving");
     try {
       const item = await bridge.workItem(projectId, unit.unitId);
@@ -55,12 +56,28 @@ function UnitsPage() {
         createdAtMs: Date.now(),
       });
       setSaveState("saved");
-      markTabDirty("units", false);
       await queryClient.invalidateQueries({ queryKey: ["project", projectId] });
+      return true;
     } catch (reason) {
       setSaveState(reason instanceof Error && reason.message.includes("revision") ? "conflict" : "error");
+      return false;
     }
-  };
+  }, [bridge, drafts, markTabDirty, projectId, queryClient, setSaveState]);
+
+  useEffect(
+    () =>
+      registerTabFlusher("units", async () => {
+        const dirtyUnits = (snapshot.data?.units ?? []).filter((unit) => {
+          const text = drafts[unit.unitId];
+          return text !== undefined && text !== (unit.translation ?? "");
+        });
+        const results = await Promise.all(dirtyUnits.map(saveRow));
+        const succeeded = results.every(Boolean);
+        if (succeeded) markTabDirty("units", false);
+        return succeeded;
+      }),
+    [drafts, markTabDirty, registerTabFlusher, saveRow, snapshot.data?.units],
+  );
 
   if (snapshot.isPending) return <Centered text={t("loading", { ns: "common" })} />;
   if (snapshot.isError) return <Centered text={snapshot.error.message} error />;

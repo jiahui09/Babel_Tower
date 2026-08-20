@@ -1521,6 +1521,8 @@ pub enum KernelError {
     Io(#[from] std::io::Error),
     #[error("authoritative database failed: {0}")]
     Storage(#[from] rusqlite::Error),
+    #[error("export recovery failed: {0}")]
+    Recovery(#[from] babel_storage::recovery::RecoveryError),
     #[error("project backup failed: {0}")]
     Backup(#[from] BackupError),
     #[error("system clock is before the Unix epoch: {0}")]
@@ -2678,6 +2680,27 @@ impl Kernel {
 
     pub fn database_path(&self) -> PathBuf {
         self.root.join("project.sqlite3")
+    }
+
+    pub fn publish_export_bytes(
+        &self,
+        export_id: i64,
+        bytes: &[u8],
+        destination: &Path,
+        format: &str,
+        created_at_ms: i64,
+    ) -> Result<(), KernelError> {
+        babel_storage::recovery::run_export_to_path_with_hook(
+            &self.root,
+            export_id,
+            bytes,
+            destination,
+            format,
+            created_at_ms,
+            |_| {},
+        )
+        ?;
+        Ok(())
     }
 
     pub fn query(&self) -> Result<ProjectQuery, KernelError> {

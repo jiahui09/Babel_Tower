@@ -71,6 +71,17 @@ pub struct SavedNavigationPosition {
     pub updated_at_ms: i64,
 }
 
+#[derive(Clone, Debug, PartialEq, Eq)]
+pub struct ExportRecordQuery {
+    pub export_id: i64,
+    pub state: String,
+    pub expected_hash: Option<Vec<u8>>,
+    pub destination_path: Option<String>,
+    pub format: Option<String>,
+    pub created_at_ms: Option<i64>,
+    pub error: Option<String>,
+}
+
 impl ProjectQuery {
     pub fn open(path: impl AsRef<Path>) -> rusqlite::Result<Self> {
         let connection = Connection::open_with_flags(
@@ -81,6 +92,14 @@ impl ProjectQuery {
         connection.pragma_update(None, "busy_timeout", 5_000)?;
         connection.pragma_update(None, "cache_size", -QUERY_CACHE_KIB)?;
         Ok(Self { connection })
+    }
+
+    pub fn export_records(&self) -> rusqlite::Result<Vec<ExportRecordQuery>> {
+        let mut statement = self.connection.prepare(
+            "SELECT export_id, state, expected_hash, destination_path, format, created_at_ms, error
+             FROM export_record ORDER BY export_id DESC",
+        )?;
+        statement.query_map([], |row| Ok(ExportRecordQuery { export_id: row.get(0)?, state: row.get(1)?, expected_hash: row.get(2)?, destination_path: row.get(3)?, format: row.get(4)?, created_at_ms: row.get(5)?, error: row.get(6)? }))?.collect()
     }
 
     pub fn commit_sequence(&self) -> rusqlite::Result<i64> {

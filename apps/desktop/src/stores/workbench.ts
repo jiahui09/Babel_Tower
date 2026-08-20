@@ -58,7 +58,7 @@ interface WorkbenchState {
   openTab: (tab: WorkbenchTab, groupId?: EditorGroup["id"]) => void;
   activateTab: (tabId: string, groupId?: EditorGroup["id"]) => void;
   markTabDirty: (tabId: string, dirty: boolean) => void;
-  closeTab: (tabId: string) => void;
+  closeTab: (tabId: string, groupId?: EditorGroup["id"]) => void;
   splitTab: (tabId: string) => void;
   registerTabFlusher: (tabId: string, flusher: () => Promise<boolean>) => () => void;
 }
@@ -140,19 +140,17 @@ export const useWorkbenchStore = create<WorkbenchState>()(
         }),
       markTabDirty: (tabId, dirty) =>
         set((state) => ({ tabs: state.tabs.map((tab) => (tab.id === tabId ? { ...tab, dirty } : tab)) })),
-      closeTab: (tabId) =>
-        set((state) => ({
-          tabs: state.tabs.filter((tab) => tab.id !== tabId),
-          groups: state.groups.map((group) => {
+      closeTab: (tabId, groupId) =>
+        set((state) => {
+          const targetGroup = groupId ?? state.focusedGroupId;
+          const groups = state.groups.map((group) => {
+            if (group.id !== targetGroup) return group;
             const tabIds = group.tabIds.filter((id) => id !== tabId);
-            return {
-              ...group,
-              tabIds,
-              activeTabId:
-                group.activeTabId === tabId ? (tabIds[tabIds.length - 1] ?? null) : group.activeTabId,
-            };
-          }),
-        })),
+            return { ...group, tabIds, activeTabId: group.activeTabId === tabId ? (tabIds[tabIds.length - 1] ?? null) : group.activeTabId };
+          });
+          const stillOpen = groups.some((group) => group.tabIds.includes(tabId));
+          return { groups, tabs: stillOpen ? state.tabs : state.tabs.filter((tab) => tab.id !== tabId) };
+        }),
       splitTab: (tabId) =>
         set((state) => ({
           groups: state.groups.map((group) =>

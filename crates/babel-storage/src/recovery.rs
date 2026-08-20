@@ -66,11 +66,28 @@ pub fn run_export_with_hook<F>(
 where
     F: FnMut(CrashPoint),
 {
+    let destination = root.join("exports").join(format!("{export_id}.bin"));
+    run_export_to_path_with_hook(root, export_id, bytes, &destination, "bin", 0, after_stage)
+}
+
+pub fn run_export_to_path_with_hook<F>(
+    root: &Path,
+    export_id: i64,
+    bytes: &[u8],
+    destination: &Path,
+    format: &str,
+    created_at_ms: i64,
+    mut after_stage: F,
+) -> Result<(), RecoveryError>
+where
+    F: FnMut(CrashPoint),
+{
     initialize(root)?;
     let connection = open_database(root)?;
     let staging_directory = root.join("staging/export").join(export_id.to_string());
     let candidate_path = staging_directory.join("candidate.bin");
-    let final_path = root.join("exports").join(format!("{export_id}.bin"));
+    let final_path = destination.to_owned();
+    if let Some(parent) = final_path.parent() { fs::create_dir_all(parent)?; }
     if final_path.exists() {
         return Err(RecoveryError::TargetExists(final_path));
     }
@@ -86,8 +103,9 @@ where
         return Err(RecoveryError::DuplicateExport(export_id));
     }
     connection.execute(
-        "INSERT INTO export_record(export_id, state) VALUES (?1, 'Preparing')",
-        [export_id],
+        "INSERT INTO export_record(export_id, state, destination_path, format, created_at_ms, updated_at_ms)
+         VALUES (?1, 'Preparing', ?2, ?3, ?4, ?4)",
+        params![export_id, destination.to_string_lossy(), format, created_at_ms],
     )?;
     after_stage(CrashPoint::AfterPreparing);
 
@@ -111,8 +129,8 @@ where
     publish_no_clobber(&candidate_path, &final_path)?;
     after_stage(CrashPoint::AfterFinalRename);
     connection.execute(
-        "UPDATE export_record SET state = 'Published' WHERE export_id = ?1",
-        [export_id],
+        "UPDATE export_record SET state = 'Published', updated_at_ms = ?2 WHERE export_id = ?1",
+        params![export_id, created_at_ms],
     )?;
     after_stage(CrashPoint::AfterPublished);
     Ok(())
@@ -122,17 +140,17 @@ pub fn recover(root: &Path, export_id: i64) -> Result<RecoveryOutcome, RecoveryE
     let connection = open_database(root)?;
     let record = connection
         .query_row(
-            "SELECT state, expected_hash
+            "SELECT state, expected_hash, destination_path
              FROM export_record WHERE export_id = ?1",
             [export_id],
-            |row| Ok((row.get::<_, String>(0)?, row.get::<_, Option<Vec<u8>>>(1)?)),
+            |row| Ok((row.get::<_, String>(0)?, row.get::<_, Option<Vec<u8>>>(1)?, row.get::<_, Option<String>>(2)?)),
         )
         .optional()?
         .ok_or(RecoveryError::MissingRecord(export_id))?;
-    let (state, expected_hash) = record;
+    let (state, expected_hash, destination_path) = record;
     let staging_directory = root.join("staging/export").join(export_id.to_string());
     let candidate_path = staging_directory.join("candidate.bin");
-    let final_path = root.join("exports").join(format!("{export_id}.bin"));
+    let final_path = destination_path.map(PathBuf::from).unwrap_or_else(|| root.join("exports").join(format!("{export_id}.bin")));
 
     match state.as_str() {
         "Preparing" => {

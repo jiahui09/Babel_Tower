@@ -14,5 +14,7 @@
   "closeDirtyDescription": "Local edits have not been acknowledged by the core. A recovery draft will remain, but it is not a saved translation.",
   "reload": "Reload",
   "copyDraft": "Copy draft",
-  "saveConflict": "The translation changed elsewhere. Your local text is still preserved."
+  "saveConflict": "The translation changed elsewhere. Your local text is still preserved.",
+  "openInOtherGroup": "Open in other editor group",
+  "secondaryPreview": "Other editor group"
 }

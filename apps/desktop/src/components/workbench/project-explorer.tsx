@@ -1,5 +1,5 @@
-import { useQuery } from "@tanstack/react-query";
-import { ChevronRight, FileText, Folder, Image, Search, TreePine } from "lucide-react";
+import { useQuery, useQueryClient } from "@tanstack/react-query";
+import { ChevronRight, FilePlus, FileText, Folder, Image, Pencil, RotateCcw, Search, Trash2, TreePine } from "lucide-react";
 import { Button as AriaButton, Tree, TreeItem, TreeItemContent } from "react-aria-components";
 import { useTranslation } from "react-i18next";
 import { useState } from "react";
@@ -28,11 +28,32 @@ export function ProjectExplorer({
 }) {
   const { t } = useTranslation("explorer");
   const bridge = useDesktopBridge();
+  const queryClient = useQueryClient();
   const panel = useWorkbenchStore((state) => state.explorerPanel);
   const setPanel = useWorkbenchStore((state) => state.setExplorerPanel);
   const query = useQuery(projectTreeQuery(bridge, projectId));
   const [searchText, setSearchText] = useState("");
   const searchQuery = useQuery(projectSearchQuery(bridge, projectId, searchText));
+  const [mutationError, setMutationError] = useState<string | null>(null);
+  const [mutating, setMutating] = useState(false);
+
+  const mutate = async (request: Parameters<typeof bridge.mutateWorkspace>[0]) => {
+    setMutating(true);
+    setMutationError(null);
+    try {
+      await bridge.mutateWorkspace(request);
+      await queryClient.invalidateQueries({ queryKey: ["project-tree", projectId] });
+    } catch (error) {
+      setMutationError(error instanceof Error ? error.message : String(error));
+    } finally {
+      setMutating(false);
+    }
+  };
+
+  const createFolder = () => {
+    const name = globalThis.prompt(t("newFolder"));
+    if (name?.trim()) void mutate({ kind: "createFolder", projectId, parentId: "workspace-root", name: name.trim() });
+  };
 
   return (
     <aside
@@ -63,6 +84,7 @@ export function ProjectExplorer({
             placeholder={t("search")}
             aria-label={t("search")}
           />
+          {mutationError && <p className="mt-2 p-2 text-xs text-[var(--danger)]">{mutationError}</p>}
           <div className="mt-2 space-y-1">
             {searchText.trim().length < 2 ? (
               <p className="m-0 p-2 text-xs text-[var(--text-muted)]">{t("searchHint")}</p>
@@ -113,7 +135,13 @@ export function ProjectExplorer({
         <div className="p-3 text-xs leading-5 text-[var(--danger)]">{query.error.message}</div>
       ) : (
         <ScrollArea className="min-h-0">
-          <ProjectTree nodes={query.data.nodes} onOpenNode={onOpenNode} />
+          <div className="flex items-center justify-end border-b border-[var(--border)] px-2 py-1">
+            <Button variant="icon" disabled={mutating} onClick={createFolder} aria-label={t("newFolder")}>
+              <FilePlus size={14} />
+            </Button>
+          </div>
+          {mutationError && <p className="m-0 p-2 text-xs text-[var(--danger)]">{mutationError}</p>}
+          <ProjectTree projectId={projectId} nodes={query.data.nodes} onOpenNode={onOpenNode} onMutate={mutate} />
         </ScrollArea>
       )}
     </aside>
@@ -121,11 +149,15 @@ export function ProjectExplorer({
 }
 
 function ProjectTree({
+  projectId,
   nodes,
   onOpenNode,
+  onMutate,
 }: {
+  projectId: string;
   nodes: ProjectTreeNode[];
   onOpenNode: (node: ProjectTreeNode) => void;
+  onMutate: (request: Parameters<ReturnType<typeof useDesktopBridge>["mutateWorkspace"]>[0]) => Promise<void>;
 }) {
   const { t } = useTranslation("explorer");
   const sections = (["source", "workspace", "derived"] as const).map((section) => ({
@@ -179,35 +211,33 @@ function ProjectTree({
                     </div>
                   )}
                 </TreeItemContent>
-                {sectionNodes
-                  .filter((node) => node.parentId === root.id)
-                  .map((node) => (
-                    <TreeItem
-                      key={node.id}
-                      id={node.id}
-                      textValue={node.name}
-                      onAction={() => node.capabilities.open && onOpenNode(node)}
-                    >
-                      <TreeItemContent>
-                        {({ level, isSelected }) => (
-                          <div
-                            className={cn(
-                              "flex h-7 items-center gap-1.5 rounded-[4px] pr-2 text-[var(--text-secondary)]",
-                              isSelected && "bg-[var(--selection)] text-[var(--selection-text)]",
-                            )}
-                            style={{ paddingLeft: `${Math.max(level - 1, 0) * 14 + 8}px` }}
-                          >
-                            {node.kind === "image" ? <Image size={14} /> : <FileText size={14} />}
-                            <span className="truncate">{node.name}</span>
-                          </div>
-                        )}
-                      </TreeItemContent>
-                    </TreeItem>
-                  ))}
+                {sectionNodes.filter((node) => node.parentId === root.id).map((node) => (
+                  <ProjectNode key={node.id} node={node} nodes={sectionNodes} projectId={projectId} onOpenNode={onOpenNode} onMutate={onMutate} />
+                ))}
               </TreeItem>
             ))}
         </TreeItem>
       ))}
     </Tree>
+  );
+}
+
+function ProjectNode({ node, nodes, projectId, onOpenNode, onMutate }: { node: ProjectTreeNode; nodes: ProjectTreeNode[]; projectId: string; onOpenNode: (node: ProjectTreeNode) => void; onMutate: (request: Parameters<ReturnType<typeof useDesktopBridge>["mutateWorkspace"]>[0]) => Promise<void> }) {
+  const { t } = useTranslation("explorer");
+  const children = nodes.filter((candidate) => candidate.parentId === node.id);
+  const recycled = node.id.startsWith("recycle/");
+  return (
+    <TreeItem id={node.id} textValue={node.name} onAction={() => node.capabilities.open && onOpenNode(node)}>
+      <TreeItemContent>{({ level, isSelected }) => (
+        <div className={cn("group flex h-7 items-center gap-1.5 rounded-[4px] pr-2 text-[var(--text-secondary)]", isSelected && "bg-[var(--selection)] text-[var(--selection-text)]")} style={{ paddingLeft: `${Math.max(level - 1, 0) * 14 + 8}px` }}>
+          {node.kind === "folder" ? <Folder size={14} /> : node.kind === "image" ? <Image size={14} /> : <FileText size={14} />}
+          <span className="min-w-0 flex-1 truncate">{node.name}</span>
+          {recycled && <button type="button" className="grid size-5 place-items-center opacity-0 group-hover:opacity-100" aria-label={t("restore")} onClick={(event) => { event.stopPropagation(); void onMutate({ kind: "restore", projectId, nodeId: node.id }); }}><RotateCcw size={12} /></button>}
+          {node.capabilities.rename && <button type="button" className="grid size-5 place-items-center opacity-0 group-hover:opacity-100" aria-label={t("rename")} onClick={(event) => { event.stopPropagation(); const name = globalThis.prompt(t("rename"), node.name); if (name?.trim() && name.trim() !== node.name) void onMutate({ kind: "rename", projectId, nodeId: node.id, name: name.trim() }); }}><Pencil size={12} /></button>}
+          {node.capabilities.delete && <button type="button" className="grid size-5 place-items-center opacity-0 group-hover:opacity-100" aria-label={t("moveToTrash")} onClick={(event) => { event.stopPropagation(); if (globalThis.confirm(t("confirmMoveToTrash", { name: node.name }))) void onMutate({ kind: "trash", projectId, nodeId: node.id }); }}><Trash2 size={12} /></button>}
+        </div>
+      )}</TreeItemContent>
+      {children.map((child) => <ProjectNode key={child.id} node={child} nodes={nodes} projectId={projectId} onOpenNode={onOpenNode} onMutate={onMutate} />)}
+    </TreeItem>
   );
 }

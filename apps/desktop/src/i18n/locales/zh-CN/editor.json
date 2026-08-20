@@ -14,5 +14,7 @@
   "closeDirtyDescription": "本地编辑仍未得到核心确认。关闭标签会保留恢复草稿，但不会把它当作已保存译文。",
   "reload": "重新加载",
   "copyDraft": "复制草稿",
-  "saveConflict": "译文已在其他位置更新，本地内容尚未丢失。"
+  "saveConflict": "译文已在其他位置更新，本地内容尚未丢失。",
+  "openInOtherGroup": "在另一编辑组打开",
+  "secondaryPreview": "另一编辑组"
 }

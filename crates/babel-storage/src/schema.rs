@@ -1,6 +1,6 @@
 use rusqlite::{Connection, OptionalExtension, TransactionBehavior};
 
-pub const CURRENT_SCHEMA_VERSION: i64 = 12;
+pub const CURRENT_SCHEMA_VERSION: i64 = 13;
 
 pub fn migrate(connection: &mut Connection) -> rusqlite::Result<()> {
     migrate_to(connection, CURRENT_SCHEMA_VERSION)
@@ -27,6 +27,7 @@ pub(crate) fn migrate_to(connection: &mut Connection, target_version: i64) -> ru
             10 => migration_10(&transaction)?,
             11 => migration_11(&transaction)?,
             12 => migration_12(&transaction)?,
+            13 => migration_13(&transaction)?,
             _ => unreachable!(),
         }
         transaction.pragma_update(None, "user_version", target)?;
@@ -427,6 +428,16 @@ fn migration_12(connection: &Connection) -> rusqlite::Result<()> {
         ) STRICT;
         CREATE INDEX workspace_operation_log_state
             ON workspace_operation_log(state, updated_at_ms);",
+    )
+}
+
+fn migration_13(connection: &Connection) -> rusqlite::Result<()> {
+    connection.execute_batch(
+        "ALTER TABLE export_record ADD COLUMN destination_path TEXT;
+         ALTER TABLE export_record ADD COLUMN format TEXT;
+         ALTER TABLE export_record ADD COLUMN created_at_ms INTEGER;
+         ALTER TABLE export_record ADD COLUMN updated_at_ms INTEGER;
+         ALTER TABLE export_record ADD COLUMN error TEXT;",
     )
 }
 

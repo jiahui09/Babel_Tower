@@ -2,7 +2,7 @@ import { Node, type JSONContent } from "@tiptap/core";
 import { EditorContent, useEditor } from "@tiptap/react";
 import StarterKit from "@tiptap/starter-kit";
 import { Bold, Code2, Italic, Strikethrough } from "lucide-react";
-import { useEffect, useRef } from "react";
+import { useEffect, useRef, useState } from "react";
 import { useTranslation } from "react-i18next";
 
 import type {
@@ -108,6 +108,7 @@ export function TranslationEditor({
   const dirty = useRef(false);
   const latestDocument = useRef<TranslationDocumentV1>(document);
   const persistRef = useRef(onPersist);
+  const [persistError, setPersistError] = useState<string | null>(null);
   useEffect(() => {
     persistRef.current = onPersist;
   }, [onPersist]);
@@ -147,6 +148,7 @@ export function TranslationEditor({
     clearTimeout(timer.current);
     timer.current = setTimeout(() => {
       setSaveState("saving");
+      setPersistError(null);
       void persistRef
         .current(tiptapToDocument(json))
         .then(() => {
@@ -156,6 +158,7 @@ export function TranslationEditor({
         })
         .catch((reason) => {
           const message = reason instanceof Error ? reason.message : String(reason);
+          setPersistError(message);
           setSaveState(message.toLowerCase().includes("revision") ? "conflict" : "error");
         });
     }, 650);
@@ -167,12 +170,14 @@ export function TranslationEditor({
       if (!dirty.current) return true;
       clearTimeout(timer.current);
       try {
+        setPersistError(null);
         await persistRef.current(latestDocument.current);
         dirty.current = false;
         onDirtyChange?.(false);
         setSaveState("saved");
         return true;
       } catch (reason) {
+        setPersistError(reason instanceof Error ? reason.message : String(reason));
         setSaveState(
           reason instanceof Error && reason.message.toLowerCase().includes("revision") ? "conflict" : "error",
         );
@@ -202,6 +207,14 @@ export function TranslationEditor({
   if (!editor) return null;
   return (
     <div className="overflow-hidden rounded-[var(--radius)] border border-[var(--border)] bg-[var(--surface-raised)] focus-within:border-[var(--accent)]">
+      {persistError && (
+        <div className="flex items-center gap-2 border-b border-[var(--danger)] bg-[color-mix(in_srgb,var(--danger)_8%,var(--surface))] px-3 py-2 text-xs">
+          <span className="min-w-0 flex-1 truncate text-[var(--danger)]">{persistError}</span>
+          <Button variant="ghost" onClick={() => schedulePersist(editor.getJSON())}>{t("retry", { ns: "common" })}</Button>
+          <Button variant="ghost" onClick={() => { editor.commands.setContent(documentToTiptap(document, unitId), { emitUpdate: false }); latestDocument.current = document; dirty.current = false; setPersistError(null); onDirtyChange?.(false); setSaveState("saved"); }}>{t("reload")}</Button>
+          <Button variant="ghost" onClick={() => void navigator.clipboard.writeText(projectDocument(latestDocument.current))}>{t("copyDraft")}</Button>
+        </div>
+      )}
       <div className="flex h-9 items-center gap-0.5 border-b border-[var(--border)] bg-[var(--surface-inset)] px-1.5">
         <FormatButton
           label={t("bold")}
@@ -231,6 +244,10 @@ export function TranslationEditor({
       <EditorContent editor={editor} />
     </div>
   );
+}
+
+function projectDocument(document: TranslationDocumentV1) {
+  return document.blocks.map((block) => block.inlines.map((inline) => inline.kind === "text" ? inline.text : inline.kind === "protected" ? inline.label : `{${inline.name}}`).join("")).join("\n");
 }
 
 function FormatButton({

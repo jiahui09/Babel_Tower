@@ -74,6 +74,22 @@ struct UnitSummary {
     local_index: i64,
 }
 
+#[derive(Debug, Deserialize)]
+#[serde(rename_all = "camelCase")]
+struct ProjectTreeRequest { project_id: String }
+
+#[derive(Debug, Serialize)]
+#[serde(rename_all = "camelCase")]
+struct ProjectTreeCapabilities { open: bool, create_child: bool, rename: bool, r#move: bool, delete: bool, reveal: bool, drop: bool }
+
+#[derive(Debug, Serialize)]
+#[serde(rename_all = "camelCase")]
+struct ProjectTreeNode { id: String, parent_id: Option<String>, section: String, kind: String, name: String, semantic_path: String, mapped_path: Option<String>, capabilities: ProjectTreeCapabilities }
+
+#[derive(Debug, Serialize)]
+#[serde(rename_all = "camelCase")]
+struct ProjectTreeSnapshot { nodes: Vec<ProjectTreeNode>, commit_sequence: i64 }
+
 #[derive(Debug, Serialize)]
 #[serde(rename_all = "camelCase")]
 struct NavigationSummary {
@@ -239,10 +255,15 @@ struct HistoryCommandRequest {
 #[derive(Debug, Deserialize)]
 #[serde(rename_all = "camelCase")]
 struct ExportRequest {
+    project_id: String,
     destination_path: String,
     command_id: String,
     created_at_ms: i64,
 }
+
+#[derive(Debug, Deserialize)]
+#[serde(rename_all = "camelCase")]
+struct ListExportsRequest { project_id: String }
 
 #[derive(Debug, Serialize)]
 #[serde(rename_all = "camelCase")]
@@ -769,6 +790,45 @@ fn workbench_snapshot(
             current_unit,
         })
     })
+}
+
+#[tauri::command]
+fn project_tree(request: ProjectTreeRequest, state: State<'_, DesktopState>) -> Result<ProjectTreeSnapshot, String> {
+    with_kernel(&state, |kernel| {
+        let project_id = hex::encode(kernel.project_id().as_bytes());
+        if request.project_id != project_id { return Err("资源树项目与当前打开项目不一致".to_owned()); }
+        let query = kernel.query().map_err(|error| error.to_string())?;
+        let commit_sequence = query.commit_sequence().map_err(|error| error.to_string())?;
+        let database_path = kernel.database_path();
+        let root = database_path.parent().ok_or_else(|| "项目目录不可用".to_owned())?;
+        let mut nodes = Vec::new();
+        for (id, section, name, directory) in [
+            ("workspace-root", "workspace", "workspace", root.join("workspace")),
+            ("recycle-root", "workspace", "recycle", root.join("recycle")),
+            ("derived-root", "derived", "derived", root.join("derived")),
+        ] {
+            nodes.push(ProjectTreeNode { id: id.to_owned(), parent_id: None, section: section.to_owned(), kind: "root".to_owned(), name: name.to_owned(), semantic_path: ".".to_owned(), mapped_path: Some(directory.to_string_lossy().into_owned()), capabilities: ProjectTreeCapabilities { open: false, create_child: id == "workspace-root", rename: false, r#move: false, delete: false, reveal: true, drop: id == "workspace-root" } });
+            collect_project_tree_nodes(&directory, id, section, if id == "recycle-root" { "recycle" } else if id == "derived-root" { "derived" } else { "workspace" }, &directory, &mut nodes)?;
+        }
+        Ok(ProjectTreeSnapshot { nodes, commit_sequence })
+    })
+}
+
+fn collect_project_tree_nodes(directory: &Path, parent_id: &str, section: &str, prefix: &str, base: &Path, nodes: &mut Vec<ProjectTreeNode>) -> Result<(), String> {
+    if !directory.exists() { return Ok(()); }
+    let mut entries = fs::read_dir(directory).map_err(|error| error.to_string())?.collect::<Result<Vec<_>, _>>().map_err(|error| error.to_string())?;
+    entries.sort_by_key(|entry| entry.file_name());
+    for entry in entries {
+        let metadata = fs::symlink_metadata(entry.path()).map_err(|error| error.to_string())?;
+        if metadata.file_type().is_symlink() { continue; }
+        let relative = entry.path().strip_prefix(base).map_err(|error| error.to_string())?.to_string_lossy().replace('\\', "/");
+        let node_id = format!("{prefix}/{relative}");
+        let is_directory = metadata.is_dir();
+        let recycle = prefix == "recycle";
+        nodes.push(ProjectTreeNode { id: node_id.clone(), parent_id: Some(parent_id.to_owned()), section: section.to_owned(), kind: if is_directory { "folder" } else { "resource" }.to_owned(), name: entry.file_name().to_string_lossy().into_owned(), semantic_path: relative, mapped_path: Some(entry.path().to_string_lossy().into_owned()), capabilities: ProjectTreeCapabilities { open: !is_directory, create_child: is_directory && !recycle, rename: !recycle, r#move: !recycle, delete: !recycle, reveal: true, drop: is_directory && !recycle } });
+        if is_directory { collect_project_tree_nodes(&entry.path(), &node_id, section, prefix, base, nodes)?; }
+    }
+    Ok(())
 }
 
 #[tauri::command]
@@ -1359,12 +1419,21 @@ fn validate_project(state: State<'_, DesktopState>) -> Result<ValidationReport, 
 #[tauri::command]
 fn create_export(request: ExportRequest, state: State<'_, DesktopState>) -> Result<ExportRecord, String> {
     with_kernel(&state, |kernel| {
+        if request.project_id != hex::encode(kernel.project_id().as_bytes()) { return Err("导出项目与当前打开项目不一致".to_owned()); }
         let format = active_format(kernel)?;
-        let report = kernel.export_active_format_id_to_path(format, &request.destination_path).map_err(|error| error.to_string())?;
+        let root = kernel.database_path().parent().ok_or_else(|| "项目目录不可用".to_owned())?.to_owned();
+        let staging = root.join("staging").join(format!("render-{}", request.command_id));
+        if let Some(parent) = staging.parent() { fs::create_dir_all(parent).map_err(|error| error.to_string())?; }
+        let report = kernel.export_active_format_id_to_path(format, &staging).map_err(|error| error.to_string())?;
+        let bytes = fs::read(&report.path).map_err(|error| error.to_string())?;
+        let digest = Sha256::digest(request.command_id.as_bytes());
+        let export_id = i64::from_be_bytes(digest[..8].try_into().expect("hash slice length")).unsigned_abs() as i64;
+        kernel.publish_export_bytes(export_id, &bytes, Path::new(&request.destination_path), format, request.created_at_ms).map_err(|error| error.to_string())?;
+        let _ = fs::remove_file(&staging);
         Ok(ExportRecord {
-            id: request.command_id,
+            id: export_id.to_string(),
             created_at_ms: request.created_at_ms,
-            path: report.path.to_string_lossy().into_owned(),
+            path: request.destination_path,
             format: format.to_owned(),
             output_hash: hex::encode(report.output_hash),
             status: "succeeded".to_owned(),
@@ -1375,20 +1444,10 @@ fn create_export(request: ExportRequest, state: State<'_, DesktopState>) -> Resu
 
 #[tauri::command]
 fn list_exports(state: State<'_, DesktopState>) -> Result<Vec<ExportRecord>, String> {
+fn list_exports(request: ListExportsRequest, state: State<'_, DesktopState>) -> Result<Vec<ExportRecord>, String> {
     with_kernel(&state, |kernel| {
-        let database_path = kernel.database_path();
-        let root = database_path.parent().ok_or_else(|| "项目目录不可用".to_owned())?;
-        let directory = root.join("exports");
-        if !directory.exists() { return Ok(Vec::new()); }
-        let mut records = Vec::new();
-        for entry in fs::read_dir(directory).map_err(|error| error.to_string())? {
-            let entry = entry.map_err(|error| error.to_string())?;
-            let path = entry.path();
-            if !path.is_file() { continue; }
-            let bytes = fs::read(&path).map_err(|error| error.to_string())?;
-            records.push(ExportRecord { id: path.file_stem().and_then(|value| value.to_str()).unwrap_or_default().to_owned(), created_at_ms: entry.metadata().and_then(|metadata| metadata.modified()).ok().and_then(|time| time.duration_since(std::time::UNIX_EPOCH).ok()).map(|duration| duration.as_millis() as i64).unwrap_or_default(), path: path.to_string_lossy().into_owned(), format: path.extension().and_then(|value| value.to_str()).unwrap_or("unknown").to_owned(), output_hash: hex::encode(Sha256::digest(bytes)), status: "succeeded".to_owned(), error: None });
-        }
-        Ok(records)
+        if request.project_id != hex::encode(kernel.project_id().as_bytes()) { return Err("导出项目与当前打开项目不一致".to_owned()); }
+        kernel.query().map_err(|error| error.to_string())?.export_records().map_err(|error| error.to_string()).map(|records| records.into_iter().map(|record| ExportRecord { id: record.export_id.to_string(), created_at_ms: record.created_at_ms.unwrap_or_default(), path: record.destination_path.unwrap_or_default(), format: record.format.unwrap_or_else(|| "unknown".to_owned()), output_hash: record.expected_hash.map(hex::encode).unwrap_or_default(), status: match record.state.as_str() { "Published" => "succeeded", "Failed" | "CancelledAfterCrash" => "failed", _ => "running" }.to_owned(), error: record.error }).collect())
     })
 }
 
@@ -1510,6 +1569,7 @@ pub fn run() {
             list_projects,
             import_file,
             workbench_snapshot,
+            project_tree,
             resource_queue,
             image_preview,
             ocr_image_region,
