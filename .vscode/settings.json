@@ -1,0 +1,26 @@
+{
+  "search.followSymlinks": false,
+  "files.watcherExclude": {
+    "**/.git/**": true,
+    "**/.phase0-work/**": true,
+    "**/node_modules/**": true,
+    "**/target/**": true,
+    "**/release/**": true
+  },
+  "search.exclude": {
+    "**/.phase0-work": true,
+    "**/node_modules": true,
+    "**/target": true,
+    "**/release": true
+  },
+  "files.exclude": {
+    "**/.phase0-work": true,
+    "**/target": true
+  },
+  "npm.exclude": [
+    "**/.phase0-work/**",
+    "**/node_modules/**",
+    "**/target/**",
+    "**/release/**"
+  ]
+}

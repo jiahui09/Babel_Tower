@@ -101,7 +101,11 @@ export function ImportPage() {
     setError(null);
     try {
       const project = await bridge.createProject({ name: projectName.trim(), parentDirectory: root.trim() });
-      await navigate({ to: "/projects/$projectId/content", params: { projectId: project.projectId }, search: { unitId: undefined } });
+      await navigate({
+        to: "/projects/$projectId/content",
+        params: { projectId: project.projectId },
+        search: { unitId: undefined },
+      });
     } catch (reason) {
       setError(reason instanceof Error ? reason.message : String(reason));
     } finally {
@@ -125,8 +129,18 @@ export function ImportPage() {
           </p>
           <label className="mt-5 flex w-full max-w-[520px] items-center gap-2">
             <span className="sr-only">{t("workbench:projectName")}</span>
-            <Input value={projectName} onChange={(event) => setProjectName(event.target.value)} placeholder={t("workbench:projectNamePlaceholder")} className="h-9 min-w-0 flex-1" />
-            <Button type="button" onClick={handleCreate} disabled={opening || !root.trim() || !projectName.trim()} variant="primary">
+            <Input
+              value={projectName}
+              onChange={(event) => setProjectName(event.target.value)}
+              placeholder={t("workbench:projectNamePlaceholder")}
+              className="h-9 min-w-0 flex-1"
+            />
+            <Button
+              type="button"
+              onClick={handleCreate}
+              disabled={opening || !root.trim() || !projectName.trim()}
+              variant="primary"
+            >
               <FolderPlus size={16} />
               {t("workbench:createProject")}
             </Button>

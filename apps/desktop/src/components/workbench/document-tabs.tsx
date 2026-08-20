@@ -35,66 +35,76 @@ export function DocumentTabs({
       <div className="flex h-8 min-w-0 overflow-x-auto border-b border-[var(--border)] bg-[var(--surface-raised)]">
         {visible.map((tab, index) => (
           <ContextMenu.Root key={tab.id}>
-          <ContextMenu.Trigger asChild>
-          <div
-            draggable
-            onDragStart={(event) => event.dataTransfer.setData("application/x-babel-tab", tab.id)}
-            onDragOver={(event) => event.preventDefault()}
-            onDrop={(event) => {
-              event.preventDefault();
-              const tabId = event.dataTransfer.getData("application/x-babel-tab");
-              if (tabId) moveTab(tabId, index, groupId);
-            }}
-            className="group flex h-8 min-w-[120px] max-w-[220px] items-center gap-1 border-r border-[var(--border)] px-1 text-xs text-[var(--text-secondary)] data-[active=true]:bg-[var(--surface)] data-[active=true]:text-[var(--text)]"
-            data-active={group?.activeTabId === tab.id}
-          >
-            <button
-              type="button"
-              className="flex h-full min-w-0 flex-1 items-center gap-2 px-1 text-left outline-none"
-              aria-current={group?.activeTabId === tab.id ? "page" : undefined}
-              onClick={() => {
-                activateTab(tab.id, groupId);
-                onActivate?.(tab);
-              }}
-            >
-              {tab.dirty && <span className="size-1.5 shrink-0 rounded-full bg-[var(--accent)]" />}
-              <span className="min-w-0 flex-1 truncate">{tab.title}</span>
-            </button>
-            {groupId === "primary" && (
-              <button
-                type="button"
-                className="grid size-5 shrink-0 place-items-center rounded-[4px] opacity-0 hover:bg-[var(--surface-inset)] group-hover:opacity-100 focus:opacity-100"
-                onClick={(event) => {
-                  event.stopPropagation();
-                  splitTab(tab.id);
+            <ContextMenu.Trigger asChild>
+              <div
+                draggable
+                onDragStart={(event) => event.dataTransfer.setData("application/x-babel-tab", tab.id)}
+                onDragOver={(event) => event.preventDefault()}
+                onDrop={(event) => {
+                  event.preventDefault();
+                  const tabId = event.dataTransfer.getData("application/x-babel-tab");
+                  if (tabId) moveTab(tabId, index, groupId);
                 }}
-                aria-label={t("openInOtherGroup")}
+                className="group flex h-8 min-w-[120px] max-w-[220px] items-center gap-1 border-r border-[var(--border)] px-1 text-xs text-[var(--text-secondary)] data-[active=true]:bg-[var(--surface)] data-[active=true]:text-[var(--text)]"
+                data-active={group?.activeTabId === tab.id}
               >
-                <Columns2 size={12} />
-              </button>
-            )}
-            <button
-              type="button"
-              className="grid size-5 shrink-0 place-items-center rounded-[4px] opacity-0 hover:bg-[var(--surface-inset)] group-hover:opacity-100 focus:opacity-100"
-              onClick={(event) => {
-                event.stopPropagation();
-                if (tab.dirty) {
-                  setCloseError(null);
-                  setPendingClose(tab);
-                } else closeTab(tab.id, groupId);
-              }}
-              aria-label={t("common:close")}
-            >
-              <X size={13} />
-            </button>
-          </div>
-          </ContextMenu.Trigger>
-          <ContextMenu.Portal>
-            <ContextMenu.Content className="z-50 min-w-44 rounded-[var(--radius)] border border-[var(--border)] bg-[var(--surface-raised)] p-1 text-xs shadow-lg">
-              <ContextMenu.Item className="cursor-default rounded-[4px] px-2 py-1.5 outline-none focus:bg-[var(--surface-inset)]" onSelect={() => closeOtherTabs(tab.id, groupId)}>{t("closeOthers")}</ContextMenu.Item>
-              <ContextMenu.Item className="cursor-default rounded-[4px] px-2 py-1.5 outline-none focus:bg-[var(--surface-inset)]" onSelect={() => closeTabsToRight(tab.id, groupId)}>{t("closeRight")}</ContextMenu.Item>
-            </ContextMenu.Content>
-          </ContextMenu.Portal>
+                <button
+                  type="button"
+                  className="flex h-full min-w-0 flex-1 items-center gap-2 px-1 text-left outline-none"
+                  aria-current={group?.activeTabId === tab.id ? "page" : undefined}
+                  onClick={() => {
+                    activateTab(tab.id, groupId);
+                    onActivate?.(tab);
+                  }}
+                >
+                  {tab.dirty && <span className="size-1.5 shrink-0 rounded-full bg-[var(--accent)]" />}
+                  <span className="min-w-0 flex-1 truncate">{tab.title}</span>
+                </button>
+                {groupId === "primary" && (
+                  <button
+                    type="button"
+                    className="grid size-5 shrink-0 place-items-center rounded-[4px] opacity-0 hover:bg-[var(--surface-inset)] group-hover:opacity-100 focus:opacity-100"
+                    onClick={(event) => {
+                      event.stopPropagation();
+                      splitTab(tab.id);
+                    }}
+                    aria-label={t("openInOtherGroup")}
+                  >
+                    <Columns2 size={12} />
+                  </button>
+                )}
+                <button
+                  type="button"
+                  className="grid size-5 shrink-0 place-items-center rounded-[4px] opacity-0 hover:bg-[var(--surface-inset)] group-hover:opacity-100 focus:opacity-100"
+                  onClick={(event) => {
+                    event.stopPropagation();
+                    if (tab.dirty) {
+                      setCloseError(null);
+                      setPendingClose(tab);
+                    } else closeTab(tab.id, groupId);
+                  }}
+                  aria-label={t("common:close")}
+                >
+                  <X size={13} />
+                </button>
+              </div>
+            </ContextMenu.Trigger>
+            <ContextMenu.Portal>
+              <ContextMenu.Content className="z-50 min-w-44 rounded-[var(--radius)] border border-[var(--border)] bg-[var(--surface-raised)] p-1 text-xs shadow-lg">
+                <ContextMenu.Item
+                  className="cursor-default rounded-[4px] px-2 py-1.5 outline-none focus:bg-[var(--surface-inset)]"
+                  onSelect={() => closeOtherTabs(tab.id, groupId)}
+                >
+                  {t("closeOthers")}
+                </ContextMenu.Item>
+                <ContextMenu.Item
+                  className="cursor-default rounded-[4px] px-2 py-1.5 outline-none focus:bg-[var(--surface-inset)]"
+                  onSelect={() => closeTabsToRight(tab.id, groupId)}
+                >
+                  {t("closeRight")}
+                </ContextMenu.Item>
+              </ContextMenu.Content>
+            </ContextMenu.Portal>
           </ContextMenu.Root>
         ))}
       </div>

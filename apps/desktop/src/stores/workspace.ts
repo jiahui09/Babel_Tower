@@ -13,6 +13,7 @@ interface WorkspaceStore {
   loadTree: (projectId: string, nodes: ProjectTreeNode[]) => void;
   failLoad: (message: string) => void;
   toggleExpanded: (nodeId: string) => void;
+  setExpanded: (nodeIds: string[]) => void;
   setSelected: (nodeId: string | null) => void;
   reveal: (nodeId: string) => void;
   restoreState: (projectId: string, state: WorkspaceStateV1 | null) => void;
@@ -57,11 +58,14 @@ export const useWorkspaceStore = create<WorkspaceStore>((set) => ({
         ? state.expandedNodeIds.filter((id) => id !== nodeId)
         : [...state.expandedNodeIds, nodeId],
     })),
+  setExpanded: (expandedNodeIds) => set({ expandedNodeIds }),
   setSelected: (selectedNodeId) => set({ selectedNodeId }),
   reveal: (selectedNodeId) =>
     set((state) => ({
       selectedNodeId,
-      expandedNodeIds: Array.from(new Set([...state.expandedNodeIds, ...ancestorsOf(state.nodes, selectedNodeId)])),
+      expandedNodeIds: Array.from(
+        new Set([...state.expandedNodeIds, ...ancestorsOf(state.nodes, selectedNodeId)]),
+      ),
     })),
   restoreState: (projectId, workspaceState) =>
     set({
@@ -70,6 +74,12 @@ export const useWorkspaceStore = create<WorkspaceStore>((set) => ({
       selectedNodeId: workspaceState?.selectedNodeId ?? null,
     }),
   reset: (projectId = undefined) =>
-    set({ projectId: projectId ?? null, nodes: [], expandedNodeIds: [], selectedNodeId: null, loading: false, error: null }),
+    set({
+      projectId: projectId ?? null,
+      nodes: [],
+      expandedNodeIds: [],
+      selectedNodeId: null,
+      loading: false,
+      error: null,
+    }),
 }));
-

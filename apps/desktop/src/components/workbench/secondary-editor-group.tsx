@@ -51,7 +51,13 @@ export function SecondaryEditorGroup({
   return (
     <section className="grid h-full min-h-0 grid-rows-[32px_1fr]" aria-label={t("secondaryPreview")}>
       <DocumentTabs groupId="secondary" />
-      <div className={activeTab?.kind === "workspaceFile" ? "min-h-0 overflow-hidden bg-[var(--surface)]" : "min-h-0 overflow-auto bg-[var(--surface)] p-4"}>
+      <div
+        className={
+          activeTab?.kind === "workspaceFile"
+            ? "min-h-0 overflow-hidden bg-[var(--surface)]"
+            : "min-h-0 overflow-auto bg-[var(--surface)] p-4"
+        }
+      >
         {activeTab?.kind === "workspaceFile" ? (
           <WorkspaceFileEditor tab={activeTab} readOnly={mirrorsPrimary} />
         ) : item.isPending ? (

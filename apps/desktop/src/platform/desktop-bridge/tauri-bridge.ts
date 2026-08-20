@@ -76,11 +76,7 @@ export class TauriDesktopBridge implements DesktopBridge {
     }>("import_file", { request: { sourcePath, projectRoot } });
   }
 
-  importWorkspaceFiles(request: {
-    projectId: string;
-    parentId: string;
-    sourcePaths: string[];
-  }) {
+  importWorkspaceFiles(request: { projectId: string; parentId: string; sourcePaths: string[] }) {
     return call<import("./types").WorkspaceMutationReceipt>("import_workspace_files", { request });
   }
 

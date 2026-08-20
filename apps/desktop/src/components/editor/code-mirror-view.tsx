@@ -5,7 +5,17 @@ import { EditorState } from "@codemirror/state";
 import { EditorView, highlightActiveLine, keymap, lineNumbers } from "@codemirror/view";
 import { useEffect, useRef } from "react";
 
-export function CodeMirrorView({ value, readOnly = true, ariaLabel, onChange }: { value: string; readOnly?: boolean; ariaLabel: string; onChange?: (value: string) => void }) {
+export function CodeMirrorView({
+  value,
+  readOnly = true,
+  ariaLabel,
+  onChange,
+}: {
+  value: string;
+  readOnly?: boolean;
+  ariaLabel: string;
+  onChange?: (value: string) => void;
+}) {
   const parent = useRef<HTMLDivElement>(null);
   useEffect(() => {
     if (!parent.current) return;
@@ -30,7 +40,11 @@ export function CodeMirrorView({ value, readOnly = true, ariaLabel, onChange }: 
           EditorView.theme({
             "&": { height: "100%", backgroundColor: "var(--surface)", color: "var(--text)" },
             ".cm-scroller": { fontFamily: "var(--editor-font)", lineHeight: "1.65" },
-            ".cm-gutters": { backgroundColor: "var(--surface-inset)", color: "var(--text-muted)", border: "none" },
+            ".cm-gutters": {
+              backgroundColor: "var(--surface-inset)",
+              color: "var(--text-muted)",
+              border: "none",
+            },
             ".cm-activeLine, .cm-activeLineGutter": { backgroundColor: "var(--selection)" },
           }),
         ],

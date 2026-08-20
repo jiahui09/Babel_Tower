@@ -1,4 +1,5 @@
 import { useQuery, useQueryClient } from "@tanstack/react-query";
+import { getCurrentWebview } from "@tauri-apps/api/webview";
 import {
   ChevronRight,
   FilePlus,
@@ -14,7 +15,7 @@ import {
 } from "lucide-react";
 import { Button as AriaButton, Tree, TreeItem, TreeItemContent } from "react-aria-components";
 import { useTranslation } from "react-i18next";
-import { useEffect, useState } from "react";
+import { useCallback, useEffect, useState } from "react";
 
 import { cn } from "../../lib/utils";
 import { useDesktopBridge, type ProjectTreeNode } from "../../platform/desktop-bridge";
@@ -22,6 +23,7 @@ import { projectSearchQuery, projectTreeQuery } from "../../queries/project";
 import { useWorkbenchStore, type ExplorerPanel } from "../../stores/workbench";
 import { useWorkspaceStore } from "../../stores/workspace";
 import { chooseWorkspaceFiles } from "../../lib/dialog";
+import { isTauriRuntime } from "../../platform/tauri-runtime";
 import { Button } from "../ui/button";
 import { Dialog, DialogContent, DialogDescription, DialogTitle } from "../ui/dialog";
 import { Input } from "../ui/input";
@@ -56,8 +58,10 @@ export function ProjectExplorer({
   const selectedNodeId = useWorkspaceStore((state) => state.selectedNodeId);
   const setSelectedNodeId = useWorkspaceStore((state) => state.setSelected);
   const loadTree = useWorkspaceStore((state) => state.loadTree);
+  const expandedNodeIds = useWorkspaceStore((state) => state.expandedNodeIds);
+  const setExpandedNodeIds = useWorkspaceStore((state) => state.setExpanded);
   const reconcileWorkspaceFiles = useWorkbenchStore((state) => state.reconcileWorkspaceFiles);
-  const query = useQuery(projectTreeQuery(bridge, projectId));
+  const query = useQuery({ ...projectTreeQuery(bridge, projectId), refetchInterval: 2_000 });
   const [searchText, setSearchText] = useState("");
   const searchQuery = useQuery(projectSearchQuery(bridge, projectId, searchText));
   const [mutationError, setMutationError] = useState<string | null>(null);
@@ -92,45 +96,87 @@ export function ProjectExplorer({
     );
   }, [loadTree, projectId, query.data, reconcileWorkspaceFiles]);
 
-  const importFiles = async () => {
-    const sourcePaths = await chooseWorkspaceFiles();
-    if (!sourcePaths.length || !workspaceRoot) return;
-    setMutating(true);
-    setMutationError(null);
-    try {
-      const receipt = await bridge.importWorkspaceFiles({
-        projectId,
-        parentId: workspaceRoot.id,
-        sourcePaths,
+  const importPaths = useCallback(
+    async (sourcePaths: string[]) => {
+      if (!sourcePaths.length || !workspaceRoot) return;
+      setMutating(true);
+      setMutationError(null);
+      try {
+        const receipt = await bridge.importWorkspaceFiles({
+          projectId,
+          parentId: workspaceRoot.id,
+          sourcePaths,
+        });
+        await queryClient.invalidateQueries({ queryKey: ["project", projectId, "tree"] });
+        const last = receipt.affectedNodeIds[receipt.affectedNodeIds.length - 1];
+        if (last) setSelectedNodeId(last);
+      } catch (error) {
+        setMutationError(error instanceof Error ? error.message : String(error));
+      } finally {
+        setMutating(false);
+      }
+    },
+    [bridge, projectId, queryClient, setSelectedNodeId, workspaceRoot],
+  );
+
+  const importFiles = async () => importPaths(await chooseWorkspaceFiles());
+
+  useEffect(() => {
+    if (!isTauriRuntime()) return;
+    let disposed = false;
+    let unlisten: (() => void) | undefined;
+    void getCurrentWebview()
+      .onDragDropEvent((event) => {
+        if (event.payload.type === "drop") void importPaths(event.payload.paths);
+      })
+      .then((dispose) => {
+        if (disposed) dispose();
+        else unlisten = dispose;
       });
-      await queryClient.invalidateQueries({ queryKey: ["project", projectId, "tree"] });
-      const last = receipt.affectedNodeIds[receipt.affectedNodeIds.length - 1];
-      if (last) setSelectedNodeId(last);
-    } catch (error) {
-      setMutationError(error instanceof Error ? error.message : String(error));
-    } finally {
-      setMutating(false);
-    }
-  };
+    return () => {
+      disposed = true;
+      unlisten?.();
+    };
+  }, [importPaths]);
 
   const handleDrop = async (event: React.DragEvent<HTMLElement>) => {
     event.preventDefault();
-    if (!workspaceRoot) return;
     const sourcePaths = Array.from(event.dataTransfer.files)
       .map((file) => (file as File & { path?: string }).path)
       .filter((path): path is string => Boolean(path));
-    if (!sourcePaths.length) return;
+    await importPaths(sourcePaths);
+  };
+
+  const submitInlineCreate = async () => {
+    if (
+      !pendingMutation ||
+      (pendingMutation.kind !== "createFile" && pendingMutation.kind !== "createFolder")
+    )
+      return;
+    const name = pendingMutation.name.trim();
+    if (!name) return;
+    if (pendingMutation.kind === "createFolder") {
+      if (await mutate({ kind: "createFolder", projectId, parentId: pendingMutation.parentId, name })) {
+        setPendingMutation(null);
+      }
+      return;
+    }
     setMutating(true);
     setMutationError(null);
     try {
-      const receipt = await bridge.importWorkspaceFiles({
+      const receipt = await bridge.createWorkspaceFile({
         projectId,
-        parentId: workspaceRoot.id,
-        sourcePaths,
+        parentId: pendingMutation.parentId,
+        name,
       });
       await queryClient.invalidateQueries({ queryKey: ["project", projectId, "tree"] });
-      const last = receipt.affectedNodeIds[receipt.affectedNodeIds.length - 1];
-      if (last) setSelectedNodeId(last);
+      const nodeId = receipt.affectedNodeIds[0];
+      if (nodeId) {
+        setSelectedNodeId(nodeId);
+        const node = (await bridge.projectTree({ projectId })).nodes.find((item) => item.id === nodeId);
+        if (node) onOpenNode(node);
+      }
+      setPendingMutation(null);
     } catch (error) {
       setMutationError(error instanceof Error ? error.message : String(error));
     } finally {
@@ -265,11 +311,30 @@ export function ProjectExplorer({
             </Button>
           </div>
           {mutationError && <p className="m-0 p-2 text-xs text-[var(--danger)]">{mutationError}</p>}
+          {(pendingMutation?.kind === "createFile" || pendingMutation?.kind === "createFolder") && (
+            <div className="flex h-8 items-center gap-1.5 px-3">
+              {pendingMutation.kind === "createFolder" ? <Folder size={14} /> : <FileText size={14} />}
+              <Input
+                autoFocus
+                value={pendingMutation.name}
+                className="h-7 min-w-0 flex-1"
+                aria-label={pendingMutation.kind === "createFolder" ? t("newFolder") : t("newFile")}
+                onChange={(event) => setPendingMutation({ ...pendingMutation, name: event.target.value })}
+                onBlur={() => !pendingMutation.name.trim() && setPendingMutation(null)}
+                onKeyDown={(event) => {
+                  if (event.key === "Escape") setPendingMutation(null);
+                  if (event.key === "Enter") void submitInlineCreate();
+                }}
+              />
+            </div>
+          )}
           <ProjectTree
             projectId={projectId}
             nodes={query.data.nodes}
             mode={panel}
             selectedNodeId={selectedNodeId}
+            expandedNodeIds={expandedNodeIds}
+            onExpandedChange={setExpandedNodeIds}
             onSelectionChange={setSelectedNodeId}
             onOpenNode={onOpenNode}
             onMutate={mutate}
@@ -278,7 +343,9 @@ export function ProjectExplorer({
         </ScrollArea>
       )}
       <WorkspaceMutationDialog
-        pending={pendingMutation}
+        pending={
+          pendingMutation?.kind === "rename" || pendingMutation?.kind === "trash" ? pendingMutation : null
+        }
         busy={mutating}
         onOpenChange={(open) => !open && setPendingMutation(null)}
         onNameChange={(name) =>
@@ -338,6 +405,8 @@ function ProjectTree({
   nodes,
   mode,
   selectedNodeId,
+  expandedNodeIds,
+  onExpandedChange,
   onSelectionChange,
   onOpenNode,
   onMutate,
@@ -347,6 +416,8 @@ function ProjectTree({
   nodes: ProjectTreeNode[];
   mode: Exclude<ExplorerPanel, "search">;
   selectedNodeId: string | null;
+  expandedNodeIds: string[];
+  onExpandedChange: (nodeIds: string[]) => void;
   onSelectionChange: (nodeId: string | null) => void;
   onOpenNode: (node: ProjectTreeNode) => void;
   onMutate: (
@@ -366,6 +437,14 @@ function ProjectTree({
     <Tree
       aria-label={t(mode)}
       selectionMode="single"
+      expandedKeys={new Set([...sections.map(({ section }) => `section:${section}`), ...expandedNodeIds])}
+      onExpandedChange={(keys) => {
+        onExpandedChange(
+          Array.from(keys).filter(
+            (key): key is string => typeof key === "string" && !key.startsWith("section:"),
+          ),
+        );
+      }}
       selectedKeys={selectedNodeId ? [selectedNodeId] : []}
       onSelectionChange={(keys) => {
         if (keys === "all") return onSelectionChange(null);

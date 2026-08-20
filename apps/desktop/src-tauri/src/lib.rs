@@ -736,9 +736,7 @@ fn create_project(
     state: State<'_, DesktopState>,
 ) -> Result<ProjectSummary, String> {
     let name = request.name.trim();
-    if name.is_empty() || Path::new(name).components().count() != 1 {
-        return Err("项目名称无效".to_owned());
-    }
+    validate_portable_name(name)?;
     let root = PathBuf::from(&request.parent_directory).join(name);
     if root.exists() && fs::read_dir(&root).map_err(|e| e.to_string())?.next().is_some() {
         return Err("项目目录已存在且不为空".to_owned());
@@ -762,6 +760,16 @@ fn ensure_project_config(root: &Path) -> Result<(), String> {
     fs::create_dir_all(&config).map_err(|e| e.to_string())?;
     let settings = config.join("settings.json");
     if !settings.exists() { fs::write(settings, b"{\n  \"schemaVersion\": 1\n}\n").map_err(|e| e.to_string())?; }
+    Ok(())
+}
+
+fn validate_portable_name(name: &str) -> Result<(), String> {
+    let trimmed = name.trim();
+    let upper = trimmed.trim_end_matches('.').to_ascii_uppercase();
+    let reserved = ["CON", "PRN", "AUX", "NUL", "COM1", "COM2", "COM3", "COM4", "COM5", "COM6", "COM7", "COM8", "COM9", "LPT1", "LPT2", "LPT3", "LPT4", "LPT5", "LPT6", "LPT7", "LPT8", "LPT9"];
+    if trimmed.is_empty() || trimmed != name || trimmed.ends_with('.') || trimmed.chars().any(|value| value.is_control() || "<>:\"/\\|?*".contains(value)) || Path::new(trimmed).components().count() != 1 || reserved.contains(&upper.as_str()) {
+        return Err("名称包含非法字符或系统保留字".to_owned());
+    }
     Ok(())
 }
 
@@ -805,7 +813,7 @@ fn create_workspace_file(request: CreateWorkspaceFileRequest, state: State<'_, D
     with_kernel(&state, |kernel| {
         ensure_kernel_project(kernel, &request.project_id)?;
         let root = workspace_root_for_kernel(kernel)?;
-        if request.name.trim().is_empty() || Path::new(&request.name).components().count() != 1 { return Err("文件名称无效".to_owned()); }
+        validate_portable_name(&request.name)?;
         let parent = parent_workspace_path(&root, &request.parent_id)?;
         if !parent.is_dir() { return Err("目标文件夹不存在".to_owned()); }
         let path = parent.join(request.name.trim());
@@ -1755,6 +1763,11 @@ fn mutate_workspace(
     request: WorkspaceMutationRequest,
     state: State<'_, DesktopState>,
 ) -> Result<WorkspaceMutationReceipt, String> {
+    match &request {
+        WorkspaceMutationRequest::CreateFolder { name, .. }
+        | WorkspaceMutationRequest::Rename { name, .. } => validate_portable_name(name)?,
+        _ => {}
+    }
     with_kernel(&state, |kernel| {
         kernel
             .mutate_workspace(request)
