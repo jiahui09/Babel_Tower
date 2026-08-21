@@ -28,3 +28,4 @@ packaging/
 release/
 apps/*/dist/
 apps/*/test-results/
+apps/*/src-tauri/gen/
