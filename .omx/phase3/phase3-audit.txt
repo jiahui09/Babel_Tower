@@ -1,3 +1,0 @@
-FAIL release/arch/release-manifest.json: Arch manifest must contain offline clean-image core/txt-worker/txt-adapter probes
-FAIL release/windows/release-manifest.json: required Phase 3 platform release manifest is missing
-FAIL release/windows: PE binaries exist but the Windows installer is still pending

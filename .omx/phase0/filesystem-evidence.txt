@@ -1,2 +1,0 @@
-TARGET SOURCE                 FSTYPE OPTIONS
-/home  /dev/nvme0n1p5[/@home] btrfs  rw,relatime,compress=zstd:3,ssd,discard=async,space_cache=v2,subvolid=286,subvol=/@home
